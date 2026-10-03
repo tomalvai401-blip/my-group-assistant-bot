@@ -1,4 +1,2 @@
-fastapi
-uvicorn[standard]
-python-telegram-bot>=22,<23
-httpx
+python-telegram-bot[job-queue]==22.5
+requests==2.32.5
