@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 0
 
 # Admin-এর Telegram profile link
-ADMIN_LINK = "https://t.me/your_username"
+ADMIN_LINK = "https://t.me/tomalchowdhury2"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
