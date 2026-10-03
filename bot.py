@@ -1,14 +1,15 @@
 import os
 import re
+import json
+import time
 import sqlite3
-import logging
+import asyncio
 import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
 
 import aiohttp
-
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -18,708 +19,1123 @@ from telegram.ext import (
     filters,
 )
 
-
 # =========================================================
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or "0")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").replace("@", "").strip()
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+PRAYER_CITY = os.getenv("PRAYER_CITY", "Narsingdi").strip()
+PRAYER_COUNTRY = os.getenv("PRAYER_COUNTRY", "Bangladesh").strip()
 
-ADMIN_USERNAME = os.getenv(
-    "ADMIN_USERNAME",
-    "tomalchowdhury2"
-).replace("@", "")
-
-PRAYER_CITY = os.getenv(
-    "PRAYER_CITY",
-    "Narsingdi"
-)
-
-PRAYER_COUNTRY = os.getenv(
-    "PRAYER_COUNTRY",
-    "Bangladesh"
-)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 TIMEZONE = ZoneInfo("Asia/Dhaka")
-
 DB_FILE = "bot_database.db"
 
-WEATHER_LAT = 24.1344
-WEATHER_LON = 90.7860
-WEATHER_NAME = "Narsingdi"
-
+# Free-tier friendly model.
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 # =========================================================
-# LOGGING
+# CHECK CONFIG
 # =========================================================
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN পাওয়া যায়নি। GitHub Secret চেক করুন।")
 
-logger = logging.getLogger(__name__)
-
+if not ADMIN_ID:
+    raise RuntimeError("ADMIN_ID পাওয়া যায়নি। GitHub Secret চেক করুন।")
 
 # =========================================================
 # DATABASE
 # =========================================================
 
-def db():
-    return sqlite3.connect(DB_FILE)
-
-
-def init_db():
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS contents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_id TEXT NOT NULL,
-            file_type TEXT NOT NULL,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_seen TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-def save_user(user):
-
-    if not user:
-        return
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO users
-        (user_id, username, first_name, last_seen)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            username = excluded.username,
-            first_name = excluded.first_name,
-            last_seen = excluded.last_seen
-    """, (
-        user.id,
-        user.username,
-        user.first_name,
-        datetime.now(TIMEZONE).isoformat()
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def save_content(
-    file_id,
-    file_type,
-    title,
-    category
-):
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO contents
-        (file_id, file_type, title, category, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        file_id,
-        file_type,
-        title,
-        category,
-        datetime.now(TIMEZONE).isoformat()
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def search_content(title, category=None):
-
-    conn = db()
-    cur = conn.cursor()
-
-    if category:
-
-        cur.execute("""
-            SELECT id, file_id, file_type, title, category
-            FROM contents
-            WHERE category = ?
-        """, (category,))
-
-    else:
-
-        cur.execute("""
-            SELECT id, file_id, file_type, title, category
-            FROM contents
-        """)
-
-    rows = cur.fetchall()
-
-    conn.close()
-
-    if not rows:
-        return None
-
-    title_clean = normalize(title)
-
-    best = None
-    best_score = 0
-
-    for row in rows:
-
-        db_title = normalize(row[3])
-
-        score = SequenceMatcher(
-            None,
-            title_clean,
-            db_title
-        ).ratio()
-
-        if title_clean in db_title:
-            score += 0.45
-
-        if db_title in title_clean:
-            score += 0.25
-
-        if score > best_score:
-            best_score = score
-            best = row
-
-    if best_score >= 0.45:
-        return best
-
-    return None
-
-
-# =========================================================
-# NORMALIZE TEXT
-# =========================================================
-
-def normalize(text):
-
-    if not text:
-        return ""
-
-    text = text.lower().strip()
-
-    replacements = {
-        "gaan": "গান",
-        "gan": "গান",
-        "natok": "নাটক",
-        "nattok": "নাটক",
-        "movie": "মুভি",
-        "cinema": "মুভি",
-        "song": "গান",
-        "drama": "নাটক",
-        "wallpaper": "ওয়ালপেপার",
-        "photo": "ছবি",
-        "pic": "ছবি",
-        "picture": "ছবি",
-        "caption": "ক্যাপশন",
-        "status": "স্ট্যাটাস",
-        "good morning": "শুভ সকাল",
-        "good afternoon": "শুভ দুপুর",
-        "good evening": "শুভ সন্ধ্যা",
-        "good night": "শুভ রাত্রি",
-        "thank you": "ধন্যবাদ",
-        "thanks": "ধন্যবাদ",
-        "hello": "হ্যালো",
-        "hi": "হাই",
-        "hey": "হাই",
-        "net": "নেট",
-        "wifi": "ওয়াইফাই",
-        "current": "কারেন্ট",
-        "electricity": "কারেন্ট",
-        "bristi": "বৃষ্টি",
-        "brishti": "বৃষ্টি",
-        "gorom": "গরম",
-        "mon kharap": "মন খারাপ",
-        "valo": "ভালো",
-        "bhalo": "ভালো",
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    text = re.sub(r"\s+", " ", text)
-
-    return text
-
-
-# =========================================================
-# ADMIN
-# =========================================================
-
-def is_admin(update):
-
-    if not update.effective_user:
-        return False
-
-    return update.effective_user.id == ADMIN_ID
-
-
-# =========================================================
-# CATEGORY DETECTION
-# =========================================================
-
-CATEGORY_KEYWORDS = {
-
-    "song": [
-        "গান",
-        "গান দেন",
-        "গান দাও",
-        "গান চাই",
-        "গান লাগবে",
-        "song",
-        "music"
-    ],
-
-    "drama": [
-        "নাটক",
-        "নাটক দেন",
-        "নাটক দাও",
-        "নাটক চাই",
-        "নাটক লাগবে",
-        "drama",
-        "natok"
-    ],
-
-    "movie": [
-        "মুভি",
-        "সিনেমা",
-        "movie",
-        "film"
-    ],
-
-    "photo": [
-        "ছবি",
-        "ছবি দেন",
-        "photo",
-        "picture",
-        "pic"
-    ],
-
-    "wallpaper": [
-        "ওয়ালপেপার",
-        "wallpaper"
-    ],
-
-    "caption": [
-        "ক্যাপশন",
-        "caption",
-        "ফেসবুক ক্যাপশন"
-    ],
-
-    "status": [
-        "স্ট্যাটাস",
-        "status"
-    ],
-
-    "quote": [
-        "উক্তি",
-        "কোট",
-        "quote"
-    ],
-
-    "poem": [
-        "কবিতা",
-        "poem"
-    ],
-
-    "joke": [
-        "জোক",
-        "জোকস",
-        "joke",
-        "মজা"
-    ],
-
-    "riddle": [
-        "ধাঁধা",
-        "riddle"
-    ],
-
-    "birthday": [
-        "জন্মদিন",
-        "birthday"
-    ],
-
-    "love": [
-        "ভালোবাসা",
-        "love",
-        "লাভ"
-    ],
-
-    "sad": [
-        "sad",
-        "দুঃখ",
-        "মন খারাপ"
-    ],
-
-    "attitude": [
-        "attitude",
-        "অ্যাটিটিউড"
-    ],
-
-    "islamic": [
-        "ইসলামিক",
-        "islamic"
-    ],
-
-    "dua": [
-        "দোয়া",
-        "দোয়া",
-        "dua"
-    ]
-}
-
-
-def detect_category(text):
-
-    text = normalize(text)
-
-    for category, keywords in CATEGORY_KEYWORDS.items():
-
-        for keyword in keywords:
-
-            if normalize(keyword) in text:
-                return category
-
-    return None
-
-
-# =========================================================
-# CONTENT REQUEST DETECTION
-# =========================================================
-
-def is_content_request(text):
-
-    category = detect_category(text)
-
-    if not category:
-        return False
-
-    request_words = [
-        "দেন",
-        "দাও",
-        "চাই",
-        "লাগবে",
-        "পাঠাও",
-        "দিবেন",
-        "দিন",
-        "পাই",
-        "নেন",
-        "show",
-        "give"
-    ]
-
-    text_n = normalize(text)
-
-    for word in request_words:
-
-        if normalize(word) in text_n:
-            return True
-
-    return category in [
-        "song",
-        "drama",
-        "movie",
-        "photo",
-        "wallpaper"
-    ]
-
+db = sqlite3.connect(
+    DB_FILE,
+    check_same_thread=False
+)
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    last_seen TEXT
+)
+""")
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS chats (
+    chat_id INTEGER PRIMARY KEY,
+    chat_type TEXT,
+    title TEXT,
+    last_seen TEXT
+)
+""")
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS contents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    category TEXT,
+    created_at TEXT
+)
+""")
+
+db.execute("""
+CREATE TABLE IF NOT EXISTS bot_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+""")
+
+db.commit()
+
+db_lock = asyncio.Lock()
 
 # =========================================================
 # TIME
 # =========================================================
 
 def now():
-
     return datetime.now(TIMEZONE)
 
 
-def time_string():
-
-    return now().strftime("%I:%M %p").lstrip("0")
-
-
-def date_string():
-
-    return now().strftime("%a, %b %d")
+def bn(value):
+    table = str.maketrans(
+        "0123456789",
+        "০১২৩৪৫৬৭৮৯"
+    )
+    return str(value).translate(table)
 
 
-def time_header():
+def time_text():
+    n = now()
+    return f"🕐 এখন সময় {bn(n.strftime('%I:%M'))} বাজে"
 
-    return (
-        f"🕐 **এখন সময় {time_string()}।**\n"
-        f"📅 {date_string()}\n"
-        f"🇧🇩 Narsingdi Time"
+
+def hour_text(hour):
+    if hour == 0:
+        h = 12
+    elif hour > 12:
+        h = hour - 12
+    else:
+        h = hour
+
+    return f"🕐 এখন সময় {bn(h)}:০০ বাজে"
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+def is_admin(update: Update):
+    if not update.effective_user:
+        return False
+
+    return update.effective_user.id == ADMIN_ID
+
+
+async def admin_only(update: Update):
+    if not is_admin(update):
+        await update.effective_message.reply_text(
+            "❌ এই Command শুধুমাত্র Admin ব্যবহার করতে পারবেন।"
+        )
+        return False
+
+    return True
+
+
+# =========================================================
+# TRACK USERS / CHATS
+# =========================================================
+
+async def track_update(update: Update):
+
+    if not update.effective_user:
+        return
+
+    user = update.effective_user
+
+    username = user.username or ""
+    first_name = user.first_name or ""
+
+    chat = update.effective_chat
+
+    async with db_lock:
+
+        db.execute(
+            """
+            INSERT OR REPLACE INTO users
+            (user_id, username, first_name, last_seen)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                user.id,
+                username,
+                first_name,
+                now().isoformat(),
+            )
+        )
+
+        if chat:
+            title = (
+                chat.title
+                or user.first_name
+                or ""
+            )
+
+            db.execute(
+                """
+                INSERT OR REPLACE INTO chats
+                (chat_id, chat_type, title, last_seen)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    chat.id,
+                    chat.type,
+                    title,
+                    now().isoformat(),
+                )
+            )
+
+        db.commit()
+
+
+# =========================================================
+# TEXT NORMALIZE
+# =========================================================
+
+def normalize(text):
+
+    text = text.lower().strip()
+
+    replacements = {
+        "গানটা": "গান",
+        "গানটি": "গান",
+        "ভিডিওটা": "ভিডিও",
+        "ভিডিওটি": "ভিডিও",
+        "ছবিটা": "ছবি",
+        "ছবিটি": "ছবি",
+        "den": "দেন",
+        "dao": "দাও",
+        "daw": "দাও",
+        "de": "দাও",
+        "vai": "ভাই",
+        "bhai": "ভাই",
+        "valo": "ভালো",
+        "bhalo": "ভালো",
+        "kemon": "কেমন",
+        "achen": "আছেন",
+        "acho": "আছো",
+    }
+
+    for a, b in replacements.items():
+        text = text.replace(a, b)
+
+    text = re.sub(
+        r"[^\w\s\u0980-\u09ff]",
+        " ",
+        text
     )
 
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+    return text
+
 
 # =========================================================
-# GENERAL CHAT REPLIES
+# CONTENT CATEGORY
 # =========================================================
 
-GENERAL_REPLIES = {
+def detect_category(title):
 
-    "হাই": [
-        "👋 Hello ভাই! 😄\nকেমন আছেন?",
-        "😎 Hello! হাজির আছি ভাই!",
-        "👋 হ্যালো ভাই! আজকে কী খবর?"
-    ],
+    t = normalize(title)
 
-    "হ্যালো": [
-        "👋 Hello ভাই! 😊",
-        "😄 হ্যালো! বলুন কী খবর?",
-        "🤖 Hello! আমি আছি।"
-    ],
+    if any(x in t for x in [
+        "গান",
+        "song",
+        "music",
+        "audio"
+    ]):
+        return "song"
 
-    "কেমন আছো": [
-        "😎 আমি তো একদম Ready ভাই!",
-        "🤖 আমার তো সবসময়ই ভালো! আপনাদের সাথে কথা বলছি তো 😄",
-        "😊 ভালো আছি ভাই। আপনার খবর কী?"
-    ],
+    if any(x in t for x in [
+        "নাটক",
+        "drama",
+        "natok"
+    ]):
+        return "drama"
 
-    "কি করো": [
-        "🤖 আপনাদের Message-এর অপেক্ষায় বসে আছি ভাই! 😎",
-        "😄 Group পাহারা দিচ্ছি ভাই!",
-        "👀 কে কী বলে সেটা শুনছি আর Reply দিচ্ছি!"
-    ],
+    if any(x in t for x in [
+        "মুভি",
+        "movie",
+        "film",
+        "cinema"
+    ]):
+        return "movie"
 
-    "ভালো লাগছে": [
-        "😊 এটা শুনে আমারও ভালো লাগছে!",
-        "😄 তাহলে আজকের Mood একদম জমজমাট!",
-        "❤️ আপনাদের ভালো লাগাটাই তো আসল ব্যাপার!"
-    ],
+    if any(x in t for x in [
+        "নাচ",
+        "dance"
+    ]):
+        return "dance"
 
-    "মন খারাপ": [
-        "😔 আরে ভাই, মন খারাপ করে বসে থাকবেন না।",
-        "💙 একটু বিশ্রাম নিন, পছন্দের কিছু করুন। আশা করি মনটা ভালো হয়ে যাবে।",
-        "😊 খারাপ সময় বেশিক্ষণ থাকে না—একটু হাসি দেন দেখি!"
-    ],
+    if any(x in t for x in [
+        "ছবি",
+        "photo",
+        "picture",
+        "wallpaper"
+    ]):
+        return "photo"
 
-    "আজকে যামু না": [
-        "😂 ঠিক আছে ভাই, আজকের Plan Cancel!",
-        "😄 আচ্ছা, আজকে না গেলে কালকে কিন্তু অজুহাত চলবে না!",
-        "🤣 আজকের Attendance আপনাকে ছাড়াই হয়ে যাবে মনে হয়!"
-    ],
+    if any(x in t for x in [
+        "ভিডিও",
+        "video"
+    ]):
+        return "video"
 
-    "ঘুমাইতেছি": [
-        "😴 ঠিক আছে ভাই, ফোনটাকেও এবার একটু ঘুমাতে দেন! 😂",
-        "🌙 Good Night তাহলে!",
-        "😂 এত তাড়াতাড়ি? আচ্ছা যান, ঘুমান!"
-    ],
-
-    "খাইছো": [
-        "😂 আমি তো Digital ভাই, আমার খাবার হলো আপনাদের Message!",
-        "🤖 আমার খাওয়া লাগে না, কিন্তু আপনি খেয়েছেন তো?",
-        "🍛 আগে আপনি খান ভাই!"
-    ]
-}
+    return "other"
 
 
-def find_general_reply(text):
+# =========================================================
+# SAVE CONTENT
+# =========================================================
 
-    text_n = normalize(text)
+async def save_content(
+    file_id,
+    file_type,
+    title
+):
 
-    for keyword, replies in GENERAL_REPLIES.items():
+    category = detect_category(title)
 
-        if normalize(keyword) in text_n:
+    async with db_lock:
 
-            return random.choice(replies)
+        db.execute(
+            """
+            INSERT INTO contents
+            (file_id, file_type, title, category, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                file_type,
+                title,
+                category,
+                now().isoformat(),
+            )
+        )
+
+        db.commit()
+
+
+# =========================================================
+# SEARCH CONTENT
+# =========================================================
+
+async def search_content(query):
+
+    q = normalize(query)
+
+    async with db_lock:
+
+        rows = db.execute(
+            """
+            SELECT id, file_id, file_type,
+                   title, category
+            FROM contents
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    best = None
+    best_score = 0
+
+    for row in rows:
+
+        content_id, file_id, file_type, title, category = row
+
+        t = normalize(title)
+
+        score = SequenceMatcher(
+            None,
+            q,
+            t
+        ).ratio()
+
+        if q in t:
+            score += 0.45
+
+        q_words = set(q.split())
+        t_words = set(t.split())
+
+        if q_words and t_words:
+            common = len(q_words & t_words)
+            score += common * 0.08
+
+        if score > best_score:
+            best_score = score
+            best = row
+
+    if best_score >= 0.35:
+        return best
 
     return None
 
 
 # =========================================================
-# WEATHER / POWER / INTERNET
+# SEND SAVED CONTENT
 # =========================================================
 
-def special_environment_reply(text):
+async def send_saved_content(
+    update,
+    row
+):
 
-    t = normalize(text)
+    content_id, file_id, file_type, title, category = row
 
-    if "বৃষ্টি" in t:
+    try:
 
-        return random.choice([
-            "🌧️ হ্যাঁ ভাই, আজ তো বৃষ্টির আমেজ! ☔😄\nবাইরে গেলে ছাতা নিতে ভুলবেন না।",
-            "☔ বৃষ্টি শুরু হলে কিন্তু চা আর আড্ডার Season শুরু! 😂\nবাইরে গেলে সাবধানে যাবেন।",
-            "🌧️ বৃষ্টির দিনে একটু ঠান্ডা ঠান্ডা Feel হচ্ছে! 😄\nছাতা সঙ্গে রাখবেন ভাই।"
-        ])
+        if file_type == "audio":
 
-    if "কারেন্ট" in t or "বিদ্যুৎ" in t:
+            await update.effective_message.reply_audio(
+                audio=file_id,
+                caption=f"🎵 {title}"
+            )
 
-        return random.choice([
-            "⚡ আরে ভাই, কারেন্টও দেখি আজকে ছুটিতে গেছে! 😂\nএকটু ধৈর্য ধরুন, ফিরে আসুক আবার।",
-            "💡 কারেন্ট নেই? তাহলে আজকে মোবাইলের Battery-টাই আসল সম্পদ! 😂",
-            "⚡ কারেন্টও আজকে লুকোচুরি খেলছে মনে হয়! 😄"
-        ])
+        elif file_type == "video":
 
-    if (
-        "নেট নেই" in t
-        or "নেট নাই" in t
-        or "নেট নেই" in t
-        or "ইন্টারনেট" in t
-        or "ওয়াইফাই" in t
-        or "wifi" in t
-    ):
+            await update.effective_message.reply_video(
+                video=file_id,
+                caption=f"🎬 {title}"
+            )
 
-        return random.choice([
-            "📶 আরে ভাই, নেটও আজকে লুকোচুরি খেলছে! 😂",
-            "📡 নেট নেই? একটু অপেক্ষা করুন, হয়তো আবার ফিরে আসবে। 😄",
-            "😂 নেটও আজকে মনে হয় ছুটিতে গেছে!"
-        ])
+        elif file_type == "photo":
 
-    if "গরম" in t:
+            await update.effective_message.reply_photo(
+                photo=file_id,
+                caption=f"🖼️ {title}"
+            )
 
-        return random.choice([
-            "🥵 উফফ! আজকে গরমটা বেশ ভালোই লাগছে!\n💧 বেশি করে পানি পান করুন ভাই।",
-            "☀️ গরমের সাথে যুদ্ধ চলছে! 😂\nপানি খান আর রোদে সাবধানে চলুন।",
-            "🥵 আজকে সূর্য মনে হয় একটু বেশি Active!"
-        ])
+        elif file_type == "voice":
 
-    return None
+            await update.effective_message.reply_voice(
+                voice=file_id,
+                caption=f"🎤 {title}"
+            )
 
+        elif file_type == "document":
 
-# =========================================================
-# FUN RESPONSES
-# =========================================================
+            await update.effective_message.reply_document(
+                document=file_id,
+                caption=f"📁 {title}"
+            )
 
-def fun_reply(text):
+        else:
+            return False
 
-    t = normalize(text)
+        return True
 
-    if "ঘুম" in t:
+    except Exception as e:
 
-        return random.choice([
-            "😴 ঘুমের সাথে এত বন্ধুত্ব কিসের ভাই? 😂",
-            "🛌 বিছানা ডাকছে নাকি ভাই? 😄",
-            "😂 ঘুম তো ঘুমই, কিন্তু কাজও তো করতে হবে ভাই!"
-        ])
+        print(
+            "SEND CONTENT ERROR:",
+            repr(e)
+        )
 
-    if "বোর" in t:
-
-        return random.choice([
-            "😂 বোর হওয়ার সময় নেই ভাই!",
-            "😎 কিছু একটা শুরু করেন, বোরিং পালাবে!",
-            "🤣 Group-এ আড্ডা দেন, বোরিং কমে যাবে!"
-        ])
-
-    if "হাসি" in t:
-
-        return random.choice([
-            "😂 হাসেন হাসেন, হাসির কোনো Tax নাই!",
-            "🤣 এটাই তো চাই—সবাই হাসিখুশি থাকুক!",
-            "😄 হাসি চলুক!"
-        ])
-
-    return None
+        return False
 
 
 # =========================================================
-# STATIC TEXT CONTENT
+# MEDIA EXTRACTION
 # =========================================================
 
-STATIC_CONTENT = {
+def extract_media(message):
 
-    "joke": [
-        "😂 শিক্ষক: বল তো সবচেয়ে অলস প্রাণী কোনটা?\nছাত্র: স্যার, যে প্রশ্নের উত্তর জানে কিন্তু বলতে চায় না! 🤣"
-    ],
+    if message.audio:
+        return (
+            message.audio.file_id,
+            "audio"
+        )
 
-    "riddle": [
-        "🧩 ধাঁধা: কোন জিনিস যত বেশি শুকায়, তত বেশি ভিজে?\n\n🤔 উত্তর: তোয়ালে!"
-    ],
+    if message.video:
+        return (
+            message.video.file_id,
+            "video"
+        )
 
-    "quote": [
-        "💭 ছোট ছোট চেষ্টা একদিন বড় পরিবর্তন নিয়ে আসে। ❤️"
-    ],
+    if message.photo:
+        return (
+            message.photo[-1].file_id,
+            "photo"
+        )
 
-    "poem": [
-        "✍️ সকাল আসে নতুন আলো নিয়ে,\nনতুন স্বপ্ন জাগে মনে। 🌸"
-    ],
+    if message.voice:
+        return (
+            message.voice.file_id,
+            "voice"
+        )
 
-    "dua": [
-        "🤲 আল্লাহ আমাদের সবাইকে সুস্থ, নিরাপদ ও শান্তিতে রাখুন। আমিন। ❤️"
-    ],
-
-    "islamic": [
-        "🕌 ভালো কাজ ছোট হলেও নিয়মিত করার চেষ্টা করুন। ❤️"
-    ],
-
-    "birthday": [
-        "🎂 শুভ জন্মদিন! 🎉\nআপনার জীবন আনন্দ, শান্তি ও সফলতায় ভরে উঠুক। ❤️"
-    ],
-
-    "love": [
-        "❤️ ভালোবাসা সুন্দর, যখন সেখানে সম্মান, বিশ্বাস ও যত্ন থাকে।"
-    ],
-
-    "sad": [
-        "😔 মন খারাপ হলে একটু বিশ্রাম নিন এবং কাছের কারও সাথে কথা বলুন। 💙"
-    ],
-
-    "attitude": [
-        "😎 নিজের মতো থাকুন, নিজের লক্ষ্য নিয়ে এগিয়ে যান।"
-    ],
-
-    "caption": [
-        "📝 নিজের গল্প নিজেই লিখুন—অন্যের কথায় নিজের পথ বদলাবেন না। 😎"
-    ],
-
-    "status": [
-        "💬 সময় বদলায়, মানুষও বদলায়—তাই নিজের লক্ষ্যটা ধরে রাখুন।"
-    ]
-}
-
-
-def static_reply(category):
-
-    if category in STATIC_CONTENT:
-
-        return random.choice(
-            STATIC_CONTENT[category]
+    if message.document:
+        return (
+            message.document.file_id,
+            "document"
         )
 
     return None
 
 
 # =========================================================
-# WEATHER API
+# AI - GEMINI
 # =========================================================
 
-async def get_weather():
+AI_SYSTEM = """
+তুমি একটি Telegram group assistant bot।
+
+তোমার নাম নির্দিষ্ট করা নেই, তাই নিজেকে শুধু "Bot" বা
+"সহকারী" হিসেবে পরিচয় দিতে পারো।
+
+তুমি বাংলা, Banglish এবং English বুঝবে।
+
+ব্যবহারকারীর ভাষার সাথে মিল রেখে উত্তর দেবে।
+
+উত্তর:
+- স্বাভাবিক
+- বন্ধুসুলভ
+- সংক্ষিপ্ত
+- প্রয়োজন অনুযায়ী বিস্তারিত
+
+ব্যবহারকারী সাধারণ কথা বললে সাধারণভাবে উত্তর দেবে।
+
+গান, নাটক, মুভি, ভিডিও, ছবি বা অন্য কোনো saved media
+চাইলে নিজে কোনো media link বানিয়ে দেবে না।
+Media system আলাদাভাবে saved content খুঁজবে।
+
+তুমি নিজের কাছে নেই এমন তথ্য নিশ্চিতভাবে জানো বলে দাবি করবে না।
+
+ব্যবহারকারী কোনো ক্ষতিকর বা অনুপযুক্ত বিষয়ে সাহায্য চাইলে
+নিরাপদভাবে প্রত্যাখ্যান করবে এবং নিরাপদ বিকল্প বলবে।
+"""
+
+
+async def gemini_reply(user_text):
+
+    if not GEMINI_API_KEY:
+        return None
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{GEMINI_MODEL}:generateContent"
+        f"?key={GEMINI_API_KEY}"
+    )
+
+    prompt = (
+        AI_SYSTEM
+        + "\n\nUser message:\n"
+        + user_text
+    )
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.8,
+            "maxOutputTokens": 500
+        }
+    }
+
+    try:
+
+        timeout = aiohttp.ClientTimeout(
+            total=25
+        )
+
+        async with aiohttp.ClientSession(
+            timeout=timeout
+        ) as session:
+
+            async with session.post(
+                url,
+                json=payload
+            ) as response:
+
+                data = await response.json()
+
+                if response.status != 200:
+
+                    print(
+                        "GEMINI ERROR:",
+                        response.status,
+                        data
+                    )
+
+                    return None
+
+                candidates = data.get(
+                    "candidates",
+                    []
+                )
+
+                if not candidates:
+                    return None
+
+                parts = (
+                    candidates[0]
+                    .get("content", {})
+                    .get("parts", [])
+                )
+
+                text_parts = []
+
+                for part in parts:
+
+                    if "text" in part:
+                        text_parts.append(
+                            part["text"]
+                        )
+
+                result = "\n".join(
+                    text_parts
+                ).strip()
+
+                return result or None
+
+    except Exception as e:
+
+        print(
+            "GEMINI EXCEPTION:",
+            repr(e)
+        )
+
+        return None
+
+
+# =========================================================
+# RATE LIMIT
+# =========================================================
+
+rate_data = {}
+
+def is_flooding(user_id):
+
+    current = time.time()
+
+    data = rate_data.setdefault(
+        user_id,
+        []
+    )
+
+    data[:] = [
+        x for x in data
+        if current - x < 5
+    ]
+
+    data.append(current)
+
+    if len(data) > 7:
+        return True
+
+    return False
+
+
+# =========================================================
+# CONTENT REQUEST DETECTION
+# =========================================================
+
+CONTENT_WORDS = [
+    "গান",
+    "song",
+    "music",
+    "নাটক",
+    "drama",
+    "natok",
+    "মুভি",
+    "movie",
+    "film",
+    "ভিডিও",
+    "video",
+    "নাচ",
+    "dance",
+    "ছবি",
+    "photo",
+    "picture",
+    "wallpaper",
+]
+
+
+def is_content_request(text):
+
+    t = normalize(text)
+
+    request_words = [
+        "দাও",
+        "দেন",
+        "চাই",
+        "লাগবে",
+        "পাঠাও",
+        "পাঠান",
+        "দিবেন",
+        "দিয়ে দাও",
+        "send",
+        "give",
+        "dao",
+        "den",
+    ]
+
+    has_content = any(
+        word in t
+        for word in CONTENT_WORDS
+    )
+
+    has_request = any(
+        word in t
+        for word in request_words
+    )
+
+    return has_content and has_request
+
+
+# =========================================================
+# PENDING REQUEST
+# =========================================================
+
+def set_pending(user_id, value):
+
+    key = f"pending_{user_id}"
+
+    db.execute(
+        """
+        INSERT OR REPLACE INTO bot_state
+        (key, value)
+        VALUES (?, ?)
+        """,
+        (
+            key,
+            json.dumps(value)
+        )
+    )
+
+    db.commit()
+
+
+def get_pending(user_id):
+
+    key = f"pending_{user_id}"
+
+    row = db.execute(
+        """
+        SELECT value
+        FROM bot_state
+        WHERE key = ?
+        """,
+        (key,)
+    ).fetchone()
+
+    if not row:
+        return None
+
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return None
+
+
+def clear_pending(user_id):
+
+    key = f"pending_{user_id}"
+
+    db.execute(
+        """
+        DELETE FROM bot_state
+        WHERE key = ?
+        """,
+        (key,)
+    )
+
+    db.commit()
+
+
+# =========================================================
+# ADMIN MEDIA SAVE
+# =========================================================
+
+async def handle_admin_media(
+    update,
+    context
+):
+
+    if not is_admin(update):
+        return False
+
+    media = extract_media(
+        update.effective_message
+    )
+
+    if not media:
+        return False
+
+    file_id, file_type = media
+
+    context.user_data[
+        "admin_save"
+    ] = {
+        "file_id": file_id,
+        "file_type": file_type
+    }
+
+    await update.effective_message.reply_text(
+        "✅ Media পেয়েছি।\n\n"
+        "এখন এই Content-এর নাম লিখুন।\n"
+        "উদাহরণ: Amar Shonar Bangla গান"
+    )
+
+    return True
+
+
+# =========================================================
+# ADMIN TITLE SAVE
+# =========================================================
+
+async def handle_admin_title(
+    update,
+    context
+):
+
+    state = context.user_data.get(
+        "admin_save"
+    )
+
+    if not state:
+        return False
+
+    title = (
+        update.effective_message.text
+        or ""
+    ).strip()
+
+    if not title:
+        await update.effective_message.reply_text(
+            "❌ Content-এর নাম লিখুন।"
+        )
+        return True
+
+    await save_content(
+        state["file_id"],
+        state["file_type"],
+        title
+    )
+
+    context.user_data.pop(
+        "admin_save",
+        None
+    )
+
+    await update.effective_message.reply_text(
+        "✅ Content সফলভাবে Save হয়েছে।\n\n"
+        f"📌 নাম: {title}"
+    )
+
+    return True
+
+
+# =========================================================
+# COMMANDS
+# =========================================================
+
+async def start(update, context):
+
+    await track_update(update)
+
+    await update.effective_message.reply_text(
+        "👋 Welcome!\n\n"
+        "আমি তোমাদের Group Assistant Bot।\n"
+        "সাধারণভাবে কথা বললেও আমি উত্তর দেওয়ার চেষ্টা করব। 🤖"
+    )
+
+
+async def admin_test(update, context):
+
+    if not await admin_only(update):
+        return
+
+    await update.effective_message.reply_text(
+        "👑 Admin Test সফল!\n\n"
+        f"Admin ID: {ADMIN_ID}\n"
+        f"Username: @{ADMIN_USERNAME or 'Not Set'}"
+    )
+
+
+async def admin_help(update, context):
+
+    if not await admin_only(update):
+        return
+
+    await update.effective_message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        "/addsong - Media save mode\n"
+        "/list - Saved content list\n"
+        "/delete ID - Content delete\n"
+        "/stats - Bot statistics\n"
+        "/broadcast TEXT - Broadcast\n"
+        "/admintest - Admin test"
+    )
+
+
+async def addsong(update, context):
+
+    if not await admin_only(update):
+        return
+
+    context.user_data[
+        "waiting_admin_media"
+    ] = True
+
+    await update.effective_message.reply_text(
+        "📥 এখন Media পাঠান।\n\n"
+        "🎵 Audio\n"
+        "🎬 Video\n"
+        "🖼️ Photo\n"
+        "🎤 Voice\n"
+        "📁 Document\n\n"
+        "Media পাওয়ার পর আমি নাম চাইব।"
+    )
+
+
+async def list_content(update, context):
+
+    if not await admin_only(update):
+        return
+
+    rows = db.execute(
+        """
+        SELECT id, title, category
+        FROM contents
+        ORDER BY id DESC
+        LIMIT 50
+        """
+    ).fetchall()
+
+    if not rows:
+
+        await update.effective_message.reply_text(
+            "📭 কোনো Content Save করা নেই।"
+        )
+        return
+
+    lines = [
+        "📚 Saved Content:\n"
+    ]
+
+    for cid, title, category in rows:
+
+        lines.append(
+            f"🆔 {cid} | {title} | {category}"
+        )
+
+    await update.effective_message.reply_text(
+        "\n".join(lines)
+    )
+
+
+async def delete_content(update, context):
+
+    if not await admin_only(update):
+        return
+
+    if not context.args:
+
+        await update.effective_message.reply_text(
+            "ব্যবহার করুন:\n"
+            "/delete ID"
+        )
+        return
+
+    try:
+        cid = int(context.args[0])
+    except ValueError:
+
+        await update.effective_message.reply_text(
+            "❌ ID সঠিক নয়।"
+        )
+        return
+
+    row = db.execute(
+        """
+        SELECT title
+        FROM contents
+        WHERE id = ?
+        """,
+        (cid,)
+    ).fetchone()
+
+    if not row:
+
+        await update.effective_message.reply_text(
+            "❌ এই ID পাওয়া যায়নি।"
+        )
+        return
+
+    db.execute(
+        """
+        DELETE FROM contents
+        WHERE id = ?
+        """,
+        (cid,)
+    )
+
+    db.commit()
+
+    await update.effective_message.reply_text(
+        f"🗑️ Deleted: {row[0]}"
+    )
+
+
+async def stats(update, context):
+
+    if not await admin_only(update):
+        return
+
+    users = db.execute(
+        "SELECT COUNT(*) FROM users"
+    ).fetchone()[0]
+
+    chats = db.execute(
+        "SELECT COUNT(*) FROM chats"
+    ).fetchone()[0]
+
+    contents = db.execute(
+        "SELECT COUNT(*) FROM contents"
+    ).fetchone()[0]
+
+    await update.effective_message.reply_text(
+        "📊 BOT STATS\n\n"
+        f"👤 Users: {users}\n"
+        f"👥 Chats: {chats}\n"
+        f"📦 Content: {contents}"
+    )
+
+
+# =========================================================
+# BROADCAST
+# =========================================================
+
+async def broadcast(update, context):
+
+    if not await admin_only(update):
+        return
+
+    text = " ".join(
+        context.args
+    ).strip()
+
+    if not text:
+
+        context.user_data[
+            "broadcast_mode"
+        ] = True
+
+        await update.effective_message.reply_text(
+            "📢 Broadcast mode ON.\n"
+            "এখন যে Text পাঠাবেন সেটা সবাইকে যাবে।"
+        )
+
+        return
+
+    await perform_broadcast(
+        update,
+        text
+    )
+
+
+async def perform_broadcast(
+    update,
+    text
+):
+
+    rows = db.execute(
+        """
+        SELECT chat_id
+        FROM chats
+        """
+    ).fetchall()
+
+    success = 0
+    failed = 0
+
+    for row in rows:
+
+        chat_id = row[0]
+
+        try:
+
+            await update.get_bot().send_message(
+                chat_id=chat_id,
+                text=text
+            )
+
+            success += 1
+
+            await asyncio.sleep(
+                0.05
+            )
+
+        except Exception as e:
+
+            print(
+                "Broadcast error:",
+                chat_id,
+                repr(e)
+            )
+
+            failed += 1
+
+    await update.effective_message.reply_text(
+        "📢 Broadcast শেষ।\n\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}"
+    )
+
+
+# =========================================================
+# WEATHER
+# =========================================================
+
+async def weather_text():
 
     url = (
         "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={WEATHER_LAT}"
-        f"&longitude={WEATHER_LON}"
-        "&current=temperature_2m,weather_code"
+        f"?latitude={24.1344}"
+        f"&longitude={90.7860}"
+        "&current=temperature_2m,"
+        "relative_humidity_2m,"
+        "weather_code,"
+        "wind_speed_10m"
     )
 
     try:
 
-        timeout = aiohttp.ClientTimeout(total=8)
+        timeout = aiohttp.ClientTimeout(
+            total=10
+        )
 
         async with aiohttp.ClientSession(
             timeout=timeout
@@ -727,69 +1143,88 @@ async def get_weather():
 
             async with session.get(url) as response:
 
-                if response.status != 200:
-                    return None
-
                 data = await response.json()
 
-                current = data.get(
-                    "current",
-                    {}
-                )
-
-                temp = current.get(
-                    "temperature_2m"
-                )
-
-                code = current.get(
-                    "weather_code"
-                )
-
-                if temp is None:
-                    return None
-
-                weather_names = {
-                    0: "পরিষ্কার আকাশ ☀️",
-                    1: "আংশিক পরিষ্কার 🌤️",
-                    2: "আংশিক মেঘলা ⛅",
-                    3: "মেঘলা ☁️",
-                    51: "হালকা গুঁড়ি গুঁড়ি বৃষ্টি 🌦️",
-                    61: "বৃষ্টি 🌧️",
-                    63: "বৃষ্টি 🌧️",
-                    65: "ভারী বৃষ্টি 🌧️",
-                    80: "বৃষ্টির সম্ভাবনা 🌦️",
-                    81: "বৃষ্টি 🌧️",
-                    82: "ভারী বৃষ্টি 🌧️",
-                }
-
-                condition = weather_names.get(
-                    code,
-                    "বর্তমান আবহাওয়া"
-                )
-
-                return (
-                    f"🌦️ **{WEATHER_NAME} Weather**\n\n"
-                    f"🌡️ Temperature: {temp}°C\n"
-                    f"☁️ Condition: {condition}\n\n"
-                    f"🕐 {time_string()}\n"
-                    f"📅 {date_string()}"
-                )
-
-    except Exception as e:
-
-        logger.warning(
-            "Weather error: %s",
-            e
+        current = data.get(
+            "current",
+            {}
         )
 
-        return None
+        temp = current.get(
+            "temperature_2m",
+            "?"
+        )
+
+        humidity = current.get(
+            "relative_humidity_2m",
+            "?"
+        )
+
+        wind = current.get(
+            "wind_speed_10m",
+            "?"
+        )
+
+        code = current.get(
+            "weather_code",
+            -1
+        )
+
+        weather_map = {
+            0: "☀️ পরিষ্কার",
+            1: "🌤️ হালকা মেঘ",
+            2: "⛅ আংশিক মেঘলা",
+            3: "☁️ মেঘলা",
+            45: "🌫️ কুয়াশা",
+            48: "🌫️ কুয়াশা",
+            51: "🌦️ হালকা গুঁড়ি বৃষ্টি",
+            53: "🌦️ গুঁড়ি বৃষ্টি",
+            55: "🌧️ গুঁড়ি বৃষ্টি",
+            61: "🌧️ হালকা বৃষ্টি",
+            63: "🌧️ বৃষ্টি",
+            65: "🌧️ ভারী বৃষ্টি",
+            80: "🌦️ বৃষ্টির ঝরনা",
+            81: "🌧️ বৃষ্টির ঝরনা",
+            82: "⛈️ ভারী বৃষ্টির ঝরনা",
+            95: "⛈️ বজ্রসহ বৃষ্টি",
+        }
+
+        condition = weather_map.get(
+            code,
+            "🌤️ পরিবর্তনশীল"
+        )
+
+        return (
+            f"🌤️ {PRAYER_CITY} Weather\n\n"
+            f"{condition}\n"
+            f"🌡️ তাপমাত্রা: {temp}°C\n"
+            f"💧 আর্দ্রতা: {humidity}%\n"
+            f"💨 বাতাস: {wind} km/h"
+        )
+
+    except Exception:
+
+        return (
+            "❌ এখন Weather তথ্য পাওয়া যাচ্ছে না।"
+        )
+
+
+async def weather(update, context):
+
+    await track_update(update)
+
+    await update.effective_message.reply_text(
+        await weather_text()
+    )
 
 
 # =========================================================
-# PRAYER API
+# PRAYER
 # =========================================================
 
-async def get_prayer_times():
+async def prayer(update, context):
+
+    await track_update(update)
 
     url = (
         "https://api.aladhan.com/v1/timingsByCity"
@@ -800,7 +1235,9 @@ async def get_prayer_times():
 
     try:
 
-        timeout = aiohttp.ClientTimeout(total=10)
+        timeout = aiohttp.ClientTimeout(
+            total=10
+        )
 
         async with aiohttp.ClientSession(
             timeout=timeout
@@ -808,521 +1245,229 @@ async def get_prayer_times():
 
             async with session.get(url) as response:
 
-                if response.status != 200:
-                    return None
-
                 data = await response.json()
 
-                timings = (
-                    data
-                    .get("data", {})
-                    .get("timings", {})
+        timings = (
+            data
+            .get("data", {})
+            .get("timings", {})
+        )
+
+        await update.effective_message.reply_text(
+            "🕌 আজকের নামাজের সময়\n\n"
+            f"📍 {PRAYER_CITY}, {PRAYER_COUNTRY}\n\n"
+            f"🌅 Fajr: {timings.get('Fajr', '-')}\n"
+            f"☀️ Dhuhr: {timings.get('Dhuhr', '-')}\n"
+            f"🌤️ Asr: {timings.get('Asr', '-')}\n"
+            f"🌇 Maghrib: {timings.get('Maghrib', '-')}\n"
+            f"🌙 Isha: {timings.get('Isha', '-')}"
+        )
+
+    except Exception:
+
+        await update.effective_message.reply_text(
+            "❌ Prayer time এখন পাওয়া যাচ্ছে না।"
+        )
+
+
+# =========================================================
+# AUTOMATIC HOURLY MESSAGES
+# =========================================================
+
+SPECIAL_MESSAGES = {
+
+    7: (
+        "🌅 শুভ সকাল!\n\n"
+        "নতুন দিনের শুরুটা হোক সুন্দর ও আনন্দময়। "
+        "আজকের দিনটি ভালো কাটুক সবার। ❤️"
+    ),
+
+    8: (
+        "☀️ সকাল ৮টা!\n\n"
+        "দিনের কাজগুলো সুন্দরভাবে শুরু করুন। "
+        "হাসিমুখে থাকুন। 😊"
+    ),
+
+    9: (
+        "🌞 সকাল ৯টা!\n\n"
+        "আজকের লক্ষ্যগুলো একে একে পূরণ করার চেষ্টা করুন। "
+        "শুভকামনা রইলো। 💪"
+    ),
+
+    10: (
+        "☕ সকাল ১০টা!\n\n"
+        "কাজের মাঝে একটু বিরতি নিয়ে পানি পান করুন। 😊"
+    ),
+
+    12: (
+        "🌤️ শুভ দুপুর!\n\n"
+        "দুপুরটা শান্তিতে কাটুক। "
+        "সময়মতো খাবার খেতে ভুলবেন না। 🍚"
+    ),
+
+    16: (
+        "🌇 বিকেল ৪টা!\n\n"
+        "দিনের বাকি সময়টুকুও সুন্দরভাবে কাটুক। 😊"
+    ),
+
+    18: (
+        "🌆 শুভ সন্ধ্যা!\n\n"
+        "সন্ধ্যার সময়টা পরিবারের মানুষদের সাথে সুন্দরভাবে কাটান। ❤️"
+    ),
+
+    19: (
+        "📚 Study Time!\n\n"
+        "পড়াশোনার জন্য কিছু সময় মনোযোগ দিন। "
+        "ছোট ছোট নিয়মিত চেষ্টা বড় ফল এনে দেয়। 💪📖"
+    ),
+
+    22: (
+        "🌙 রাত ১০টা!\n\n"
+        "দিনের কাজ শেষ করে এখন ধীরে ধীরে বিশ্রামের প্রস্তুতি নিন। "
+        "নিজের যত্ন নিন। 😴"
+    ),
+
+    0: (
+        "🌙 শুভ রাত্রি!\n\n"
+        "দিন শেষ। এখন ভালোভাবে বিশ্রাম নিন। "
+        "আগামীকাল নতুন দিনের শুরু। 😴✨"
+    ),
+}
+
+
+GENERIC_HOURS = {
+    11,
+    13,
+    14,
+    15,
+    17,
+    20,
+    21,
+    23,
+}
+
+
+def auto_message(hour):
+
+    if hour in SPECIAL_MESSAGES:
+        return SPECIAL_MESSAGES[hour]
+
+    if hour in GENERIC_HOURS:
+        return hour_text(hour)
+
+    return None
+
+
+async def get_state(key):
+
+    async with db_lock:
+
+        row = db.execute(
+            """
+            SELECT value
+            FROM bot_state
+            WHERE key = ?
+            """,
+            (key,)
+        ).fetchone()
+
+    return row[0] if row else None
+
+
+async def set_state(key, value):
+
+    async with db_lock:
+
+        db.execute(
+            """
+            INSERT OR REPLACE INTO bot_state
+            (key, value)
+            VALUES (?, ?)
+            """,
+            (key, value)
+        )
+
+        db.commit()
+
+
+async def automatic_loop(application):
+
+    print("Automatic message loop started.")
+
+    while True:
+
+        try:
+
+            current = now()
+
+            hour = current.hour
+
+            # Only check around the beginning of each hour.
+            if current.minute <= 1:
+
+                today_hour = (
+                    current.strftime("%Y-%m-%d")
+                    + f"-{hour}"
                 )
 
-                if not timings:
-                    return None
+                last_sent = await get_state(
+                    "last_auto_hour"
+                )
 
-                return {
-                    "Fajr": timings.get("Fajr"),
-                    "Dhuhr": timings.get("Dhuhr"),
-                    "Asr": timings.get("Asr"),
-                    "Maghrib": timings.get("Maghrib"),
-                    "Isha": timings.get("Isha"),
-                }
+                if last_sent != today_hour:
 
-    except Exception as e:
+                    message = auto_message(hour)
 
-        logger.warning(
-            "Prayer error: %s",
-            e
-        )
+                    if message:
 
-        return None
+                        rows = db.execute(
+                            """
+                            SELECT chat_id
+                            FROM chats
+                            """
+                        ).fetchall()
 
+                        for row in rows:
 
-# =========================================================
-# ADMIN CONTENT UPLOAD STATE
-# =========================================================
+                            chat_id = row[0]
 
-pending_admin_upload = {}
+                            try:
 
+                                await application.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=message
+                                )
 
-async def handle_admin_media(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+                                await asyncio.sleep(
+                                    0.05
+                                )
 
-    if not is_admin(update):
-        return False
+                            except Exception as e:
 
-    message = update.message
+                                print(
+                                    "AUTO SEND ERROR:",
+                                    chat_id,
+                                    repr(e)
+                                )
 
-    file_id = None
-    file_type = None
+                        await set_state(
+                            "last_auto_hour",
+                            today_hour
+                        )
 
-    if message.audio:
+            await asyncio.sleep(20)
 
-        file_id = message.audio.file_id
-        file_type = "audio"
+        except asyncio.CancelledError:
+            raise
 
-    elif message.voice:
+        except Exception as e:
 
-        file_id = message.voice.file_id
-        file_type = "voice"
-
-    elif message.video:
-
-        file_id = message.video.file_id
-        file_type = "video"
-
-    elif message.document:
-
-        file_id = message.document.file_id
-        file_type = "document"
-
-    elif message.photo:
-
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-
-    if not file_id:
-        return False
-
-    pending_admin_upload[update.effective_user.id] = {
-        "file_id": file_id,
-        "file_type": file_type
-    }
-
-    await message.reply_text(
-        "📥 কনটেন্ট পেয়েছি!\n\n"
-        "🎬 এখন কনটেন্টের নাম লিখুন।\n\n"
-        "উদাহরণ:\n"
-        "ব্যাচেলর পয়েন্ট\n\n"
-        "💡 নাম পাওয়ার পর আমি নিজে থেকেই "
-        "Category বুঝে Save করার চেষ্টা করব।"
-    )
-
-    return True
-
-
-def guess_category_from_title(title):
-
-    t = normalize(title)
-
-    if "নাটক" in t:
-        return "drama"
-
-    if "গান" in t or "song" in t:
-        return "song"
-
-    if "মুভি" in t or "সিনেমা" in t:
-        return "movie"
-
-    if "ওয়ালপেপার" in t:
-        return "wallpaper"
-
-    if "ছবি" in t or "photo" in t:
-        return "photo"
-
-    # Admin যদি শুধু নাম দেয়, default হিসেবে drama
-    return "drama"
-
-
-# =========================================================
-# SEND CONTENT
-# =========================================================
-
-async def send_saved_content(
-    update,
-    context,
-    row
-):
-
-    _, file_id, file_type, title, category = row
-
-    try:
-
-        if file_type == "audio":
-
-            await update.message.reply_audio(
-                audio=file_id,
-                caption=(
-                    f"🎵 **{title}** ❤️\n\n"
-                    "ধন্যবাদ! আপনার চাওয়া কনটেন্ট নিন। 😊\n\n"
-                    "💙 আরো কিছু লাগলে জানাবেন, "
-                    "আমরা আছি আপনার সাথে! 🤝"
-                ),
-                parse_mode="Markdown"
+            print(
+                "AUTO LOOP ERROR:",
+                repr(e)
             )
 
-        elif file_type == "voice":
-
-            await update.message.reply_voice(
-                voice=file_id,
-                caption=(
-                    f"🎧 **{title}** ❤️\n\n"
-                    "💙 আরো কিছু লাগলে জানাবেন, "
-                    "আমরা আছি আপনার সাথে! 🤝"
-                ),
-                parse_mode="Markdown"
-            )
-
-        elif file_type == "video":
-
-            await update.message.reply_video(
-                video=file_id,
-                caption=(
-                    f"🎬 **{title}** 🍿❤️\n\n"
-                    "Thank you! 😊\n"
-                    "নিন আপনার চাওয়া কনটেন্ট।\n\n"
-                    "💙 আরো কিছু লাগলে জানাবেন, "
-                    "আমরা আছি আপনার সাথে! 🤝"
-                ),
-                parse_mode="Markdown"
-            )
-
-        elif file_type == "photo":
-
-            await update.message.reply_photo(
-                photo=file_id,
-                caption=(
-                    f"🖼️ **{title}** ❤️\n\n"
-                    "Thank you! 😊\n\n"
-                    "💙 আরো কিছু লাগলে জানাবেন, "
-                    "আমরা আছি আপনার সাথে! 🤝"
-                ),
-                parse_mode="Markdown"
-            )
-
-        else:
-
-            await update.message.reply_document(
-                document=file_id,
-                caption=(
-                    f"📁 **{title}** ❤️\n\n"
-                    "💙 আরো কিছু লাগলে জানাবেন, "
-                    "আমরা আছি আপনার সাথে! 🤝"
-                ),
-                parse_mode="Markdown"
-            )
-
-    except Exception as e:
-
-        logger.error(
-            "Send content error: %s",
-            e
-        )
-
-        await update.message.reply_text(
-            "❌ কনটেন্ট পাঠাতে সমস্যা হয়েছে।"
-        )
-
-
-# =========================================================
-# CONTENT REQUEST FLOW
-# =========================================================
-
-pending_user_requests = {}
-
-
-async def handle_content_request(
-    update,
-    context,
-    category
-):
-
-    if category == "song":
-
-        pending_user_requests[
-            update.effective_user.id
-        ] = "song"
-
-        await update.message.reply_text(
-            "🎵 Sure! 😊\n"
-            "গানের নামটা বলুন।"
-        )
-
-    elif category == "drama":
-
-        pending_user_requests[
-            update.effective_user.id
-        ] = "drama"
-
-        await update.message.reply_text(
-            "🎬 Sure! 😊\n"
-            "নাটকের নামটা বলুন।"
-        )
-
-    elif category == "movie":
-
-        pending_user_requests[
-            update.effective_user.id
-        ] = "movie"
-
-        await update.message.reply_text(
-            "🎞️ Sure! 😊\n"
-            "মুভির নামটা বলুন।"
-        )
-
-    elif category == "photo":
-
-        pending_user_requests[
-            update.effective_user.id
-        ] = "photo"
-
-        await update.message.reply_text(
-            "🖼️ Sure! 😊\n"
-            "ছবির নামটা বলুন।"
-        )
-
-    elif category == "wallpaper":
-
-        pending_user_requests[
-            update.effective_user.id
-        ] = "wallpaper"
-
-        await update.message.reply_text(
-            "🌄 Sure! 😊\n"
-            "Wallpaper-এর নামটা বলুন।"
-        )
-
-    else:
-
-        content = static_reply(category)
-
-        if content:
-
-            await update.message.reply_text(
-                content
-            )
-
-        else:
-
-            await update.message.reply_text(
-                "😊 অবশ্যই! একটু বিস্তারিত বলুন।"
-            )
-
-
-# =========================================================
-# ADMIN COMMANDS
-# =========================================================
-
-async def start(update, context):
-
-    save_user(update.effective_user)
-
-    await update.message.reply_text(
-        "👋 **Welcome!** 😊\n\n"
-        "আমি আপনার Group Assistant Bot। 🤖\n\n"
-        "🎵 গান\n"
-        "🎬 নাটক\n"
-        "🎞️ মুভি\n"
-        "🖼️ ছবি\n"
-        "🌄 Wallpaper\n"
-        "📝 Caption\n"
-        "💬 Status\n"
-        "😂 Joke\n"
-        "🕌 Islamic\n"
-        "🕐 সময়\n"
-        "🌦️ Weather\n"
-        "🕌 নামাজের সময়\n\n"
-        "যা দরকার সাধারণভাবেই লিখুন। ❤️",
-        parse_mode="Markdown"
-    )
-
-
-async def help_command(update, context):
-
-    await update.message.reply_text(
-        "🤖 **Assistant Help**\n\n"
-        "Command দেওয়ার প্রয়োজন নেই।\n\n"
-        "উদাহরণ:\n"
-        "🎵 গান দেন\n"
-        "🎬 নাটক দেন\n"
-        "🎞️ মুভি দেন\n"
-        "🖼️ ছবি দেন\n"
-        "🕐 এখন কয়টা বাজে\n"
-        "📅 আজ কত তারিখ\n"
-        "🕌 আজকের নামাজের সময়\n"
-        "🌦️ আজকের আবহাওয়া\n\n"
-        "সাধারণ কথাও বলতে পারেন। 😊",
-        parse_mode="Markdown"
-    )
-
-
-async def admin_command(update, context):
-
-    if not is_admin(update):
-
-        await update.message.reply_text(
-            "❌ এই Command শুধুমাত্র Admin ব্যবহার করতে পারবেন।"
-        )
-
-        return
-
-    await update.message.reply_text(
-        "👑 **Admin Panel**\n\n"
-        "📥 Content Add করতে শুধু Audio/Video/Photo পাঠান।\n"
-        "তারপর আমি নাম চাইব।\n\n"
-        "📊 /stats\n"
-        "📋 /list\n"
-        "🗑️ /delete ID",
-        parse_mode="Markdown"
-    )
-
-
-async def stats_command(update, context):
-
-    if not is_admin(update):
-        return
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT COUNT(*) FROM users"
-    )
-
-    users = cur.fetchone()[0]
-
-    cur.execute(
-        "SELECT COUNT(*) FROM contents"
-    )
-
-    contents = cur.fetchone()[0]
-
-    conn.close()
-
-    await update.message.reply_text(
-        f"👑 **Admin Stats**\n\n"
-        f"👥 Users: {users}\n"
-        f"💾 Contents: {contents}",
-        parse_mode="Markdown"
-    )
-
-
-async def list_command(update, context):
-
-    if not is_admin(update):
-        return
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id, title, category
-        FROM contents
-        ORDER BY id DESC
-        LIMIT 30
-    """)
-
-    rows = cur.fetchall()
-
-    conn.close()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "📭 এখনো কোনো Content নেই।"
-        )
-
-        return
-
-    text = "📋 **Latest Contents**\n\n"
-
-    for row in rows:
-
-        text += (
-            f"🆔 {row[0]}\n"
-            f"🎬 {row[1]}\n"
-            f"📂 {row[2]}\n\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown"
-    )
-
-
-async def delete_command(update, context):
-
-    if not is_admin(update):
-        return
-
-    if not context.args:
-
-        await update.message.reply_text(
-            "ব্যবহার:\n/delete ID"
-        )
-
-        return
-
-    try:
-
-        content_id = int(
-            context.args[0]
-        )
-
-    except ValueError:
-
-        await update.message.reply_text(
-            "❌ ID সঠিক নয়।"
-        )
-
-        return
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "DELETE FROM contents WHERE id = ?",
-        (content_id,)
-    )
-
-    deleted = cur.rowcount
-
-    conn.commit()
-    conn.close()
-
-    if deleted:
-
-        await update.message.reply_text(
-            "✅ Content সফলভাবে Delete হয়েছে।"
-        )
-
-    else:
-
-        await update.message.reply_text(
-            "❌ এই ID-এর কোনো Content পাওয়া যায়নি।"
-        )
-
-
-async def prayer_command(update, context):
-
-    prayers = await get_prayer_times()
-
-    if not prayers:
-
-        await update.message.reply_text(
-            "❌ আজকের নামাজের সময় পাওয়া যাচ্ছে না।"
-        )
-
-        return
-
-    text = (
-        "🕌 **আজকের নামাজের সময়**\n\n"
-        f"🌅 Fajr — {prayers['Fajr']}\n"
-        f"☀️ Dhuhr — {prayers['Dhuhr']}\n"
-        f"🌤️ Asr — {prayers['Asr']}\n"
-        f"🌇 Maghrib — {prayers['Maghrib']}\n"
-        f"🌙 Isha — {prayers['Isha']}\n\n"
-        f"📍 {PRAYER_CITY}, {PRAYER_COUNTRY}"
-    )
-
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown"
-    )
+            await asyncio.sleep(20)
 
 
 # =========================================================
@@ -1330,206 +1475,203 @@ async def prayer_command(update, context):
 # =========================================================
 
 async def handle_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    update,
+    context
 ):
 
-    if not update.message:
+    if not update.effective_message:
         return
 
+    await track_update(update)
+
+    message = update.effective_message
     user = update.effective_user
 
-    save_user(user)
-
-    user_id = user.id
-
-    text = update.message.text
-
     # -----------------------------------------------------
-    # ADMIN MEDIA
+    # ADMIN DIRECT MEDIA
     # -----------------------------------------------------
 
     if is_admin(update):
 
-        handled = await handle_admin_media(
-            update,
-            context
-        )
+        if context.user_data.get(
+            "waiting_admin_media"
+        ):
 
-        if handled:
+            media = extract_media(message)
+
+            if media:
+
+                file_id, file_type = media
+
+                context.user_data.pop(
+                    "waiting_admin_media",
+                    None
+                )
+
+                context.user_data[
+                    "admin_save"
+                ] = {
+                    "file_id": file_id,
+                    "file_type": file_type
+                }
+
+                await message.reply_text(
+                    "✅ Media পেয়েছি।\n"
+                    "এখন Content-এর নাম লিখুন।"
+                )
+
+                return
+
+        # Direct admin media save
+        media = extract_media(message)
+
+        if media and not message.text:
+
+            file_id, file_type = media
+
+            context.user_data[
+                "admin_save"
+            ] = {
+                "file_id": file_id,
+                "file_type": file_type
+            }
+
+            await message.reply_text(
+                "✅ Media পেয়েছি।\n\n"
+                "এখন Content-এর নাম লিখুন।"
+            )
+
             return
 
+        # Admin title
+        if context.user_data.get(
+            "admin_save"
+        ):
+
+            if message.text:
+
+                handled = await handle_admin_title(
+                    update,
+                    context
+                )
+
+                if handled:
+                    return
+
+        # Broadcast mode
+        if context.user_data.get(
+            "broadcast_mode"
+        ):
+
+            if message.text:
+
+                context.user_data.pop(
+                    "broadcast_mode",
+                    None
+                )
+
+                await perform_broadcast(
+                    update,
+                    message.text
+                )
+
+                return
+
     # -----------------------------------------------------
-    # TEXT ONLY
+    # MEDIA FROM NORMAL USER
     # -----------------------------------------------------
+
+    if not message.text:
+
+        # Do not send unnecessary AI replies
+        if message.photo:
+            return
+
+        if message.audio:
+            return
+
+        if message.video:
+            return
+
+        if message.voice:
+            return
+
+        if message.document:
+            return
+
+        return
+
+    text = message.text.strip()
 
     if not text:
         return
 
-    text_clean = text.strip()
-    normalized = normalize(text_clean)
-
     # -----------------------------------------------------
-    # ADMIN CONTENT NAME
+    # RATE LIMIT
     # -----------------------------------------------------
 
-    if is_admin(update):
+    if user and is_flooding(
+        user.id
+    ):
 
-        if user_id in pending_admin_upload:
+        last_busy = context.user_data.get(
+            "last_busy",
+            0
+        )
 
-            upload = pending_admin_upload.pop(
-                user_id
+        if time.time() - last_busy > 8:
+
+            context.user_data[
+                "last_busy"
+            ] = time.time()
+
+            await message.reply_text(
+                "⏳ একটু ধীরে বলুন, আমি শুনছি। 🙂"
             )
 
-            title = text_clean.strip()
+        return
 
-            category = guess_category_from_title(
-                title
+    # -----------------------------------------------------
+    # PENDING CONTENT
+    # -----------------------------------------------------
+
+    pending = get_pending(
+        user.id
+    )
+
+    if pending:
+
+        row = await search_content(
+            text
+        )
+
+        if row:
+
+            await message.reply_text(
+                "👋 Welcome!\n"
+                "⏳ একটু অপেক্ষা করুন, দিচ্ছি..."
             )
 
-            save_content(
-                upload["file_id"],
-                upload["file_type"],
-                title,
-                category
+            success = await send_saved_content(
+                update,
+                row
             )
 
-            await update.message.reply_text(
-                "✅ **Successfully Saved!** 🎉\n\n"
-                f"🎬 Name: {title}\n"
-                f"📂 Category: {category}\n\n"
-                "💾 কনটেন্টটি সফলভাবে Database-এ "
-                "সংরক্ষণ করা হয়েছে।",
-                parse_mode="Markdown"
-            )
+            if success:
+
+                clear_pending(
+                    user.id
+                )
+
+                await message.reply_text(
+                    "আর কিছু লাগলে জানাবেন, আমরা আছি আপনার সাথে! 🤝"
+                )
 
             return
 
-    # -----------------------------------------------------
-    # USER PENDING CONTENT NAME
-    # -----------------------------------------------------
-
-    if user_id in pending_user_requests:
-
-        category = pending_user_requests.pop(
-            user_id
-        )
-
-        result = search_content(
-            text_clean,
-            category
-        )
-
-        if result:
-
-            await send_saved_content(
-                update,
-                context,
-                result
-            )
-
-        else:
-
-            category_names = {
-                "song": "গান",
-                "drama": "নাটক",
-                "movie": "মুভি",
-                "photo": "ছবি",
-                "wallpaper": "Wallpaper"
-            }
-
-            name = category_names.get(
-                category,
-                "কনটেন্ট"
-            )
-
-            await update.message.reply_text(
-                f"😔 দুঃখিত ভাই, **{text_clean}** নামে "
-                f"কোনো {name} এখনো পাওয়া যায়নি।\n\n"
-                "💡 নামটা আবার একটু ঠিকভাবে লিখে চেষ্টা করুন।",
-                parse_mode="Markdown"
-            )
-
-        return
-
-    # -----------------------------------------------------
-    # TIME REQUEST
-    # -----------------------------------------------------
-
-    if (
-        "এখন কয়টা" in normalized
-        or "এখন কত বাজে" in normalized
-        or "সময় কত" in normalized
-        or "time" == normalized
-        or "current time" in normalized
-    ):
-
-        await update.message.reply_text(
-            time_header(),
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # DATE REQUEST
-    # -----------------------------------------------------
-
-    if (
-        "আজ কত তারিখ" in normalized
-        or "আজকের তারিখ" in normalized
-        or "date" == normalized
-    ):
-
-        await update.message.reply_text(
-            f"📅 আজ **{date_string()}**\n"
-            f"🕐 {time_string()}\n"
-            f"🇧🇩 Narsingdi Time",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # WEATHER REQUEST
-    # -----------------------------------------------------
-
-    if (
-        "আবহাওয়া" in normalized
-        or "weather" in normalized
-        or "তাপমাত্রা" in normalized
-    ):
-
-        weather = await get_weather()
-
-        if weather:
-
-            await update.message.reply_text(
-                weather,
-                parse_mode="Markdown"
-            )
-
-        else:
-
-            await update.message.reply_text(
-                "🌦️ এখন Weather তথ্য পাওয়া যাচ্ছে না।"
-            )
-
-        return
-
-    # -----------------------------------------------------
-    # PRAYER REQUEST
-    # -----------------------------------------------------
-
-    if (
-        "নামাজের সময়" in normalized
-        or "নামাজ সময়" in normalized
-        or "prayer time" in normalized
-    ):
-
-        await prayer_command(
-            update,
-            context
+        await message.reply_text(
+            "❌ এই নামে কোনো Saved Content পাইনি।\n"
+            "আরেকটু সঠিক নাম লিখে চেষ্টা করুন।"
         )
 
         return
@@ -1538,578 +1680,202 @@ async def handle_message(
     # CONTENT REQUEST
     # -----------------------------------------------------
 
-    if is_content_request(text_clean):
+    if is_content_request(text):
 
-        category = detect_category(
-            text_clean
+        row = await search_content(
+            text
         )
 
-        if category:
+        if row:
 
-            if category in [
-                "song",
-                "drama",
-                "movie",
-                "photo",
-                "wallpaper"
-            ]:
+            await message.reply_text(
+                "👋 Welcome!\n"
+                "⏳ একটু অপেক্ষা করুন, দিচ্ছি..."
+            )
 
-                await handle_content_request(
-                    update,
-                    context,
-                    category
+            success = await send_saved_content(
+                update,
+                row
+            )
+
+            if success:
+
+                await message.reply_text(
+                    "আর কিছু লাগলে জানাবেন, আমরা আছি আপনার সাথে! 🤝"
                 )
-
-            else:
-
-                content = static_reply(
-                    category
-                )
-
-                if content:
-
-                    await update.message.reply_text(
-                        content
-                    )
 
             return
 
+        set_pending(
+            user.id,
+            {
+                "type": "content_request",
+                "asked_at": now().isoformat()
+            }
+        )
+
+        await message.reply_text(
+            "👋 Welcome!\n"
+            "⏳ অবশ্যই। Content-এর নামটা লিখুন, "
+            "আমি Saved Content থেকে খুঁজে দিচ্ছি।"
+        )
+
+        return
+
     # -----------------------------------------------------
-    # ENVIRONMENT REPLIES
+    # TIME
     # -----------------------------------------------------
 
-    special = special_environment_reply(
-        text_clean
+    nt = normalize(text)
+
+    if any(x in nt for x in [
+        "কয়টা বাজে",
+        "কত বাজে",
+        "সময় কত",
+        "time",
+        "what time"
+    ]):
+
+        await message.reply_text(
+            time_text()
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # DATE
+    # -----------------------------------------------------
+
+    if any(x in nt for x in [
+        "আজ কত তারিখ",
+        "আজকের তারিখ",
+        "date",
+        "today"
+    ]):
+
+        n = now()
+
+        await message.reply_text(
+            "📅 আজকের তারিখ: "
+            f"{bn(n.strftime('%d-%m-%Y'))}"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # WEATHER
+    # -----------------------------------------------------
+
+    if any(x in nt for x in [
+        "আবহাওয়া",
+        "বৃষ্টি হবে",
+        "বৃষ্টি",
+        "weather"
+    ]):
+
+        await message.reply_text(
+            await weather_text()
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # PRAYER
+    # -----------------------------------------------------
+
+    if any(x in nt for x in [
+        "নামাজের সময়",
+        "নামাজ সময়",
+        "আজকের নামাজ",
+        "prayer time"
+    ]):
+
+        await prayer(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # QUICK STATIC REPLIES
+    # -----------------------------------------------------
+
+    if any(x in nt for x in [
+        "আসসালামু আলাইকুম",
+        "assalamu alaikum"
+    ]):
+
+        await message.reply_text(
+            "ওয়ালাইকুমুস সালাম! 😊"
+        )
+
+        return
+
+    if any(x in nt for x in [
+        "শুভ সকাল",
+        "good morning"
+    ]):
+
+        await message.reply_text(
+            "🌅 শুভ সকাল! আপনার দিনটি সুন্দর হোক। 😊"
+        )
+
+        return
+
+    if any(x in nt for x in [
+        "শুভ রাত্রি",
+        "good night"
+    ]):
+
+        await message.reply_text(
+            "🌙 শুভ রাত্রি! ভালোভাবে বিশ্রাম নিন। 😴"
+        )
+
+        return
+
+    if any(x in nt for x in [
+        "ধন্যবাদ",
+        "thanks",
+        "thank you"
+    ]):
+
+        await message.reply_text(
+            "স্বাগতম! 😊"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # GEMINI AI
+    # -----------------------------------------------------
+
+    reply = await gemini_reply(
+        text
     )
 
-    if special:
+    if reply:
 
-        await update.message.reply_text(
-            special
+        await message.reply_text(
+            reply
         )
 
         return
 
     # -----------------------------------------------------
-    # GENERAL REPLIES
+    # FALLBACK
     # -----------------------------------------------------
 
-    general = find_general_reply(
-        text_clean
+    fallback = random.choice([
+        "বুঝলাম 😊 আরেকটু বিস্তারিত বলুন।",
+        "ঠিক আছে, বলুন—আমি শুনছি। 🙂",
+        "হুম 😊 আপনার কথাটা বুঝতে চেষ্টা করছি।",
+        "আচ্ছা! আরও একটু বলুন।"
+    ])
+
+    await message.reply_text(
+        fallback
     )
-
-    if general:
-
-        await update.message.reply_text(
-            general
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # FUN REPLIES
-    # -----------------------------------------------------
-
-    fun = fun_reply(
-        text_clean
-    )
-
-    if fun:
-
-        await update.message.reply_text(
-            fun
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # GREETINGS
-    # -----------------------------------------------------
-
-    if normalized in [
-        "good morning",
-        "শুভ সকাল"
-    ]:
-
-        await update.message.reply_text(
-            "🌅 **Good Morning!** ☀️\n"
-            "এবার ঘুম থেকে উঠুন, সকাল হয়েছে। 😊",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    if normalized in [
-        "good afternoon",
-        "শুভ দুপুর"
-    ]:
-
-        await update.message.reply_text(
-            "☀️ **Good Afternoon!** 😊\n"
-            "সুন্দর একটা দুপুর কাটুক সবার। ❤️",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    if normalized in [
-        "good evening",
-        "শুভ সন্ধ্যা"
-    ]:
-
-        await update.message.reply_text(
-            "🌆 **Good Evening!** 😊\n"
-            "সুন্দর একটা সন্ধ্যা কাটুক সবার। ❤️",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    if normalized in [
-        "good night",
-        "শুভ রাত্রি"
-    ]:
-
-        await update.message.reply_text(
-            "🌙 **Good Night!** 😴\n"
-            "ভালোভাবে ঘুমান এবং নিজের যত্ন নিন। ❤️",
-            parse_mode="Markdown"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # THANK YOU
-    # -----------------------------------------------------
-
-    if (
-        "ধন্যবাদ" in normalized
-        or "thank you" in normalized
-        or "thanks" in normalized
-    ):
-
-        await update.message.reply_text(
-            random.choice([
-                "😊 You're Welcome ভাই!",
-                "❤️ Welcome! সবসময়!",
-                "😎 No Problem ভাই!"
-            ])
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # UNKNOWN
-    # -----------------------------------------------------
-
-    await update.message.reply_text(
-        random.choice([
-            "🤖 হুম ভাই, কথাটা বুঝলাম। আরেকটু সহজ করে বলবেন? 😄",
-            "😄 বুঝতে একটু সমস্যা হচ্ছে ভাই। আবার বলুন তো!",
-            "🤖 আমি শুনছি ভাই, একটু বিস্তারিত বলুন।"
-        ])
-    )
-
-
-# =========================================================
-# AUTOMATIC HOURLY SYSTEM
-# =========================================================
-
-last_hour_sent = None
-last_special_sent = set()
-
-
-async def automatic_messages(
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    global last_hour_sent
-    global last_special_sent
-
-    current = now()
-
-    hour = current.hour
-    minute = current.minute
-
-    # Telegram chat IDs যেখানে Bot কথা বলবে
-    chat_ids = context.application.bot_data.get(
-        "active_chats",
-        set()
-    )
-
-    if not chat_ids:
-        return
-
-    # -----------------------------------------------------
-    # Every Hour
-    # -----------------------------------------------------
-
-    if minute == 0:
-
-        hour_key = current.strftime(
-            "%Y-%m-%d-%H"
-        )
-
-        if last_hour_sent != hour_key:
-
-            last_hour_sent = hour_key
-
-            message = (
-                time_header()
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-
-                except Exception as e:
-
-                    logger.warning(
-                        "Hourly send error: %s",
-                        e
-                    )
-
-    # -----------------------------------------------------
-    # 7 AM
-    # -----------------------------------------------------
-
-    if hour == 7 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-07"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "🌅 **Good Morning!** ☀️\n"
-                "এবার ঘুম থেকে উঠুন, সকাল হয়ে গেছে। 😊\n"
-                "নতুন দিন, নতুন শুরু—দিনটা সুন্দর কাটুক। ❤️"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 8 AM
-    # -----------------------------------------------------
-
-    if hour == 8 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-08"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "😴 আর কত ঘুমাবেন ভাই?\n"
-                "এবার উঠুন, সকাল তো অনেকটাই হয়ে গেছে! 😂\n"
-                "🌞 দিন শুরু করার সময় হয়েছে।"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 9 AM
-    # -----------------------------------------------------
-
-    if hour == 9 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-09"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "😴 ঘুমের সাথে এত বন্ধুত্ব কিসের ভাই? 😂\n"
-                "এবার উঠুন—দিন কিন্তু এগিয়ে যাচ্ছে! 🌞"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 10 AM
-    # -----------------------------------------------------
-
-    if hour == 10 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-10"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "😂 কী ভাই! ১০টা বাজে, এখনো ঘুম?\n"
-                "এবার কিন্তু উঠতেই হবে!\n"
-                "☀️ সকালটা আর নষ্ট করবেন না।"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 12 PM
-    # -----------------------------------------------------
-
-    if hour == 12 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-12"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "☀️ **Good Afternoon!** 😊\n"
-                "দুপুর হয়ে গেছে।\n"
-                "সময়মতো খাবার খান, পানি পান করুন এবং নিজের যত্ন নিন। ❤️"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 4 PM
-    # -----------------------------------------------------
-
-    if hour == 16 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-16"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "🌤️ বিকেল হয়ে গেছে!\n"
-                "একটু বিশ্রাম নিন, তারপর প্রয়োজনীয় কাজগুলো শেষ করুন। 😊"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 6 PM
-    # -----------------------------------------------------
-
-    if hour == 18 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-18"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "🌆 **Good Evening!** 😊\n"
-                "সুন্দর একটা সন্ধ্যা কাটুক সবার। ❤️"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 7 PM STUDY
-    # -----------------------------------------------------
-
-    if hour == 19 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-19"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "📚 **Study Time!** 📝\n"
-                "পড়াশোনার সময় হয়েছে।\n"
-                "📖 কিছুক্ষণ মন দিয়ে পড়ুন—আজকের একটু "
-                "পরিশ্রমই আগামী দিনের কাজে আসবে। 💙\n\n"
-                "🎯 ফোনটা একটু পাশে রেখে পড়ায় মন দিন। 😊"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 10 PM
-    # -----------------------------------------------------
-
-    if hour == 22 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-22"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "😴 কী ভাই, এখনো জেগে আছেন?\n"
-                "এবার দিনের কাজ গুছিয়ে ঘুমানোর প্রস্তুতি নিন। 🌙\n"
-                "💤 পর্যাপ্ত ঘুম শরীর ও মনকে সতেজ রাখতে সাহায্য করে। ❤️"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message
-                    )
-                except:
-                    pass
-
-    # -----------------------------------------------------
-    # 12 AM
-    # -----------------------------------------------------
-
-    if hour == 0 and minute == 0:
-
-        key = current.strftime(
-            "%Y-%m-%d-00"
-        )
-
-        if key not in last_special_sent:
-
-            last_special_sent.add(key)
-
-            message = (
-                f"{time_header()}\n\n"
-                "🌙 **Good Night!** 😴\n"
-                "এখন কিন্তু সত্যিই ঘুমানোর সময়।\n"
-                "আর কতক্ষণ জেগে থাকবেন ভাই? 😂\n"
-                "💤 ভালোভাবে বিশ্রাম নিন, নিজের যত্ন নিন। ❤️\n\n"
-                "🌙 **Sleep well & take care!**"
-            )
-
-            for chat_id in list(chat_ids):
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode="Markdown"
-                    )
-                except:
-                    pass
-
-
-# =========================================================
-# TRACK ACTIVE CHATS
-# =========================================================
-
-async def track_chat(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if update.effective_chat:
-
-        context.application.bot_data.setdefault(
-            "active_chats",
-            set()
-        ).add(
-            update.effective_chat.id
-        )
 
 
 # =========================================================
@@ -2121,10 +1887,43 @@ async def error_handler(
     context
 ):
 
-    logger.error(
-        "Bot error: %s",
-        context.error
+    print(
+        "BOT ERROR:",
+        repr(context.error)
     )
+
+
+# =========================================================
+# STARTUP
+# =========================================================
+
+async def post_init(application):
+
+    application.bot_data[
+        "automatic_task"
+    ] = asyncio.create_task(
+        automatic_loop(application)
+    )
+
+    print(
+        "Bot started successfully."
+    )
+
+
+async def post_shutdown(application):
+
+    task = application.bot_data.get(
+        "automatic_task"
+    )
+
+    if task:
+
+        task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # =========================================================
@@ -2133,28 +1932,16 @@ async def error_handler(
 
 def main():
 
-    if not BOT_TOKEN:
-
-        raise RuntimeError(
-            "BOT_TOKEN পাওয়া যায়নি। GitHub Secret ঠিক আছে কিনা দেখুন।"
-        )
-
-    if ADMIN_ID == 0:
-
-        raise RuntimeError(
-            "ADMIN_ID পাওয়া যায়নি। GitHub Secret ঠিক আছে কিনা দেখুন।"
-        )
-
-    init_db()
-
     application = (
-        Application.builder()
+        Application
+        .builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 
     # Commands
-
     application.add_handler(
         CommandHandler(
             "start",
@@ -2164,95 +1951,77 @@ def main():
 
     application.add_handler(
         CommandHandler(
-            "help",
-            help_command
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
             "admin",
-            admin_command
+            admin_help
         )
     )
 
     application.add_handler(
         CommandHandler(
-            "stats",
-            stats_command
+            "admintest",
+            admin_test
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "addsong",
+            addsong
         )
     )
 
     application.add_handler(
         CommandHandler(
             "list",
-            list_command
+            list_content
         )
     )
 
     application.add_handler(
         CommandHandler(
             "delete",
-            delete_command
+            delete_content
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "stats",
+            stats
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "broadcast",
+            broadcast
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "weather",
+            weather
         )
     )
 
     application.add_handler(
         CommandHandler(
             "prayer",
-            prayer_command
+            prayer
         )
     )
 
-    # Track every chat
-
+    # ALL normal messages
     application.add_handler(
         MessageHandler(
-            filters.ALL,
-            track_chat
-        ),
-        group=-10
-    )
-
-    # Main message handler
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.ALL & ~filters.COMMAND,
             handle_message
         )
     )
-
-    # Media handler
-
-    application.add_handler(
-        MessageHandler(
-            filters.VIDEO
-            | filters.AUDIO
-            | filters.VOICE
-            | filters.PHOTO
-            | filters.Document.ALL,
-            handle_message
-        )
-    )
-
-    # Error
 
     application.add_error_handler(
         error_handler
-    )
-
-    # Automatic system
-    # প্রতি 20 সেকেন্ডে check করবে
-
-    application.job_queue.run_repeating(
-        automatic_messages,
-        interval=20,
-        first=5
-    )
-
-    logger.info(
-        "Bot started successfully."
     )
 
     application.run_polling(
