@@ -17,7 +17,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # এখানে তোমার Telegram Admin-এর numeric User ID পরে বসাবে
-ADMIN_ID = 0
+ADMIN_ID = 8721334265
 
 # Admin-এর Telegram profile link
 ADMIN_LINK = "https://t.me/tomalchowdhury2"
