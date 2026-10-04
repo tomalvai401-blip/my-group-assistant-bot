@@ -6,6 +6,11 @@ on:
     branches:
       - main
 
+# একই সময়ে শুধু ১টি Bot instance চলবে
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -16,8 +21,15 @@ jobs:
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       ADMIN_ID: ${{ secrets.ADMIN_ID }}
       ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+
+      # OpenAI API
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # Prayer settings
       PRAYER_COUNTRY: ${{ secrets.PRAYER_COUNTRY }}
       PRAYER_CITY: ${{ secrets.PRAYER_CITY }}
+
+      # Gemini API
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
