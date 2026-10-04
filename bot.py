@@ -48,10 +48,10 @@ DB_FILE = "bot.db"
 
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN পাওয়া যায়নি।")
+    raise RuntimeError("❌ BOT_TOKEN পাওয়া যায়নি।")
 
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY পাওয়া যায়নি।")
+    raise RuntimeError("❌ OPENAI_API_KEY পাওয়া যায়নি।")
 
 
 try:
@@ -74,9 +74,7 @@ def db_connect():
         DB_FILE,
         timeout=30
     )
-
     conn.row_factory = sqlite3.Row
-
     return conn
 
 
@@ -141,10 +139,7 @@ def init_db():
 
 
 def now_str():
-
-    return datetime.now(
-        TZ
-    ).strftime(
+    return datetime.now(TZ).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
@@ -216,9 +211,6 @@ def save_chat(chat):
     if not chat:
         return
 
-    title = chat.title or ""
-    username = chat.username or ""
-
     db_execute("""
         INSERT INTO chats (
             chat_id,
@@ -238,8 +230,8 @@ def save_chat(chat):
     """, (
         chat.id,
         chat.type,
-        title,
-        username,
+        chat.title or "",
+        chat.username or "",
         now_str(),
         now_str()
     ))
@@ -275,7 +267,7 @@ def save_message(
 
 def get_history(
     chat_id,
-    limit=12
+    limit=10
 ):
 
     rows = db_execute("""
@@ -289,30 +281,23 @@ def get_history(
         limit
     ), fetch=True)
 
-    rows = list(
-        reversed(rows)
-    )
+    rows = list(reversed(rows))
 
-    result = []
-
-    for row in rows:
-
-        if row["role"] not in (
-            "user",
-            "assistant"
-        ):
-            continue
-
-        result.append({
+    return [
+        {
             "role": row["role"],
             "content": row["content"]
-        })
-
-    return result
+        }
+        for row in rows
+        if row["role"] in (
+            "user",
+            "assistant"
+        )
+    ]
 
 
 # =========================================================
-# BOT STATE
+# STATE
 # =========================================================
 
 def set_state(
@@ -328,8 +313,7 @@ def set_state(
         VALUES (?, ?)
 
         ON CONFLICT(key)
-        DO UPDATE SET
-            value=excluded.value
+        DO UPDATE SET value=excluded.value
     """, (
         key,
         str(value)
@@ -373,11 +357,9 @@ async def admin_only(update):
 
     if not user or not is_admin(user.id):
 
-        if update.effective_message:
-
-            await update.effective_message.reply_text(
-                "❌ এই Command শুধুমাত্র Admin ব্যবহার করতে পারবেন।"
-            )
+        await update.effective_message.reply_text(
+            "❌ এই Command শুধুমাত্র Admin ব্যবহার করতে পারবেন।"
+        )
 
         return False
 
@@ -395,26 +377,26 @@ def check_rate_limit(user_id):
 
     now = time.time()
 
-    data = rate_data.setdefault(
+    values = rate_data.setdefault(
         user_id,
         []
     )
 
-    data[:] = [
-        t for t in data
+    values[:] = [
+        t for t in values
         if now - t < 5
     ]
 
-    if len(data) >= 7:
+    if len(values) >= 7:
         return False
 
-    data.append(now)
+    values.append(now)
 
     return True
 
 
 # =========================================================
-# TEXT NORMALIZER
+# TEXT
 # =========================================================
 
 def normalize_text(text):
@@ -437,66 +419,161 @@ def normalize_text(text):
 
 
 # =========================================================
-# CONTENT SYSTEM
+# FIXED REPLIES
+# =========================================================
+
+def fixed_reply(text):
+
+    t = normalize_text(text)
+
+    # Greeting
+    if t in {
+        "হাই",
+        "হ্যালো",
+        "হাই হাই",
+        "hi",
+        "hello",
+        "hey"
+    }:
+
+        return (
+            "হাই! 👋 "
+            "কেমন আছেন? কীভাবে সাহায্য করতে পারি?"
+        )
+
+    # Salam
+    if t in {
+        "আসসালামু আলাইকুম",
+        "assalamualaikum",
+        "assalamu alaikum"
+    }:
+
+        return (
+            "ওয়ালাইকুম আসসালাম! 🤝 "
+            "কেমন আছেন?"
+        )
+
+    # How are you
+    if t in {
+        "কেমন আছো",
+        "কেমন আছেন",
+        "কেমন আছ",
+        "how are you",
+        "how r u"
+    }:
+
+        return (
+            "আমি ভালো আছি! 😊 "
+            "আপনি কেমন আছেন?"
+        )
+
+    # Thanks
+    if t in {
+        "ধন্যবাদ",
+        "অনেক ধন্যবাদ",
+        "thanks",
+        "thank you",
+        "থ্যাংকস"
+    }:
+
+        return (
+            "স্বাগতম! 😊 "
+            "যখন দরকার হবে বলবেন।"
+        )
+
+    # Bye
+    if t in {
+        "বাই",
+        "বিদায়",
+        "bye",
+        "goodbye"
+    }:
+
+        return (
+            "ঠিক আছে! 👋 "
+            "ভালো থাকবেন।"
+        )
+
+    # Electricity
+    electricity = [
+        "বিদ্যুৎ নাই",
+        "বিদ্যুৎ নেই",
+        "কারেন্ট নাই",
+        "কারেন্ট নেই",
+        "লাইট নাই",
+        "লাইট নেই"
+    ]
+
+    if any(x in t for x in electricity):
+
+        return (
+            "বিদ্যুৎ না থাকার কারণ হতে পারে "
+            "লোডশেডিং, লাইনে ত্রুটি, সাবস্টেশনের সমস্যা "
+            "অথবা রক্ষণাবেক্ষণ। নির্দিষ্ট কারণ জানতে "
+            "আপনার এলাকার বিদ্যুৎ অফিসের আপডেট দেখা সবচেয়ে নির্ভরযোগ্য।"
+        )
+
+    # Internet
+    internet = [
+        "ইন্টারনেট নাই",
+        "ইন্টারনেট নেই",
+        "নেট নাই",
+        "নেট নেই",
+        "wifi নাই",
+        "wifi নেই",
+        "ওয়াইফাই নাই",
+        "ওয়াইফাই নেই"
+    ]
+
+    if any(x in t for x in internet):
+
+        return (
+            "ইন্টারনেট না থাকার কারণ হতে পারে "
+            "ISP-এর সমস্যা, রাউটার/মোবাইল ডাটার সমস্যা, "
+            "নেটওয়ার্ক congestion অথবা maintenance। "
+            "আগে Wi-Fi/Data বন্ধ করে আবার চালু করে "
+            "অন্য একটি website বা app খুলে পরীক্ষা করুন।"
+        )
+
+    return None
+
+
+# =========================================================
+# CONTENT
 # =========================================================
 
 CONTENT_WORDS = [
-
     "গান",
-    "গানটা",
-    "গানটি",
     "song",
-    "songs",
-
     "নাটক",
-    "নাটকটা",
-    "নাটকটি",
     "drama",
-    "dramas",
-
     "মুভি",
-    "মুভিটা",
-    "মুভিটি",
     "movie",
-    "movies",
-
     "সিনেমা",
-    "সিনেমাটা",
-    "cinema",
-
     "ভিডিও",
-    "ভিডিওটা",
-    "ভিডিওটি",
     "video",
-    "videos",
-
     "ডান্স",
     "dance",
-
     "ছবি",
-    "ছবিটা",
     "photo",
-    "photos",
-    "picture",
+    "picture"
 ]
 
 
 REQUEST_WORDS = [
-
     "দাও",
     "দেন",
     "দিবে",
     "চাই",
     "লাগবে",
     "পাঠাও",
-    "পাঠিয়ে",
     "পাঠান",
     "send",
     "give",
     "want",
     "please",
     "দেখাও",
-    "দেখতে চাই",
+    "দেখতে চাই"
 ]
 
 
@@ -504,19 +581,10 @@ def is_content_request(text):
 
     t = normalize_text(text)
 
-    has_content = any(
-        word in t
-        for word in CONTENT_WORDS
-    )
-
-    has_request = any(
-        word in t
-        for word in REQUEST_WORDS
-    )
-
     return (
-        has_content
-        and has_request
+        any(x in t for x in CONTENT_WORDS)
+        and
+        any(x in t for x in REQUEST_WORDS)
     )
 
 
@@ -524,29 +592,23 @@ def extract_content_query(text):
 
     t = normalize_text(text)
 
-    words_to_remove = (
+    remove_words = (
         CONTENT_WORDS
         + REQUEST_WORDS
         + [
+            "আমাকে",
             "একটা",
             "একটি",
-            "আমাকে",
             "আমার",
             "প্লিজ",
             "please",
-            "টাও",
             "টা",
             "টি",
-            "দিতে",
-            "হবে",
-            "করে",
-            "দাও",
-            "দেন",
-            "আমাকে",
+            "টাও"
         ]
     )
 
-    for word in words_to_remove:
+    for word in remove_words:
 
         t = re.sub(
             r"\b" + re.escape(word) + r"\b",
@@ -554,25 +616,20 @@ def extract_content_query(text):
             t
         )
 
-    t = re.sub(
+    return re.sub(
         r"\s+",
         " ",
         t
     ).strip()
 
-    return t
-
 
 def search_content(query):
 
-    query = normalize_text(
-        query
-    )
+    query = normalize_text(query)
 
     if not query:
         return None
 
-    # প্রথমে পুরো phrase খোঁজা
     row = db_execute("""
         SELECT *
         FROM contents
@@ -586,11 +643,9 @@ def search_content(query):
     if row:
         return row
 
-    # এরপর শব্দ ধরে খোঁজা
     words = [
-        w
-        for w in query.split()
-        if len(w) >= 2
+        x for x in query.split()
+        if len(x) >= 2
     ]
 
     if not words:
@@ -609,16 +664,14 @@ def search_content(query):
             f"%{word}%"
         )
 
-    sql = f"""
+    return db_execute(
+        f"""
         SELECT *
         FROM contents
         WHERE {" OR ".join(conditions)}
         ORDER BY id DESC
         LIMIT 1
-    """
-
-    return db_execute(
-        sql,
+        """,
         tuple(params),
         fetchone=True
     )
@@ -633,22 +686,15 @@ async def send_saved_content(
 
     try:
 
-        title = row["title"]
-        media_type = row["media_type"]
-        file_id = row["file_id"]
-
         await message.reply_text(
-            f"🎬 {title}\n\n"
+            f"🎬 {row['title']}\n\n"
             "⏳ পাঠানো হচ্ছে..."
         )
 
-        if media_type == "photo":
+        media_type = row["media_type"]
+        file_id = row["file_id"]
 
-            await message.reply_photo(
-                photo=file_id
-            )
-
-        elif media_type == "video":
+        if media_type == "video":
 
             await message.reply_video(
                 video=file_id,
@@ -661,10 +707,10 @@ async def send_saved_content(
                 audio=file_id
             )
 
-        elif media_type == "document":
+        elif media_type == "photo":
 
-            await message.reply_document(
-                document=file_id
+            await message.reply_photo(
+                photo=file_id
             )
 
         elif media_type == "animation":
@@ -688,7 +734,7 @@ async def send_saved_content(
     except Exception as e:
 
         print(
-            "CONTENT SEND ERROR:",
+            "CONTENT ERROR:",
             repr(e)
         )
 
@@ -706,7 +752,7 @@ async def send_saved_content(
 pending_content = {}
 
 
-def set_pending_content(
+def set_pending(
     chat_id,
     user_id
 ):
@@ -717,7 +763,7 @@ def set_pending_content(
     }
 
 
-def get_pending_content(
+def pending_exists(
     chat_id,
     user_id
 ):
@@ -732,11 +778,7 @@ def get_pending_content(
     if data["user_id"] != user_id:
         return False
 
-    if (
-        time.time()
-        - data["time"]
-        > 600
-    ):
+    if time.time() - data["time"] > 600:
 
         pending_content.pop(
             chat_id,
@@ -748,9 +790,7 @@ def get_pending_content(
     return True
 
 
-def clear_pending_content(
-    chat_id
-):
+def clear_pending(chat_id):
 
     pending_content.pop(
         chat_id,
@@ -759,230 +799,34 @@ def clear_pending_content(
 
 
 # =========================================================
-# FIXED NATURAL REPLIES
-# =========================================================
-
-def get_fixed_reply(text):
-
-    t = normalize_text(text)
-
-    # -----------------------------
-    # Greeting
-    # -----------------------------
-
-    greetings = {
-        "হাই",
-        "হ্যালো",
-        "হাই হাই",
-        "হ্যালো হ্যালো",
-        "hi",
-        "hello",
-        "hey",
-        "হাই কেমন আছো",
-        "হ্যালো কেমন আছো",
-        "hi how are you",
-        "hello how are you",
-    }
-
-    if t in greetings:
-
-        return (
-            "হাই! 👋 "
-            "কেমন আছেন? "
-            "কীভাবে সাহায্য করতে পারি?"
-        )
-
-
-    # -----------------------------
-    # Assalamu Alaikum
-    # -----------------------------
-
-    if t in [
-        "আসসালামু আলাইকুম",
-        "আসসালামু আলাইকুম সবাই",
-        "assalamualaikum",
-        "assalamu alaikum",
-    ]:
-
-        return (
-            "ওয়ালাইকুম আসসালাম! 🤝 "
-            "কেমন আছেন?"
-        )
-
-
-    # -----------------------------
-    # How are you
-    # -----------------------------
-
-    if t in [
-        "কেমন আছো",
-        "কেমন আছেন",
-        "কেমন আছ",
-        "কেমন আছিস",
-        "how are you",
-        "how r u",
-    ]:
-
-        return (
-            "আমি ভালো আছি! 😊 "
-            "আপনি কেমন আছেন?"
-        )
-
-
-    # -----------------------------
-    # Thanks
-    # -----------------------------
-
-    if t in [
-        "ধন্যবাদ",
-        "অনেক ধন্যবাদ",
-        "thanks",
-        "thank you",
-        "থ্যাংকস",
-        "অনেক থ্যাংকস",
-    ]:
-
-        return (
-            "স্বাগতম! 😊 "
-            "যখন দরকার হবে বলবেন।"
-        )
-
-
-    # -----------------------------
-    # Goodbye
-    # -----------------------------
-
-    if t in [
-        "বিদায়",
-        "বাই",
-        "bye",
-        "goodbye",
-        "আচ্ছা বাই",
-        "ঠিক আছে বাই",
-    ]:
-
-        return (
-            "ঠিক আছে! 👋 "
-            "ভালো থাকবেন।"
-        )
-
-
-    # -----------------------------
-    # Electricity
-    # -----------------------------
-
-    electricity_words = [
-
-        "বিদ্যুৎ নাই",
-        "বিদ্যুৎ নেই",
-        "কারেন্ট নাই",
-        "কারেন্ট নেই",
-        "electricity নাই",
-        "electricity নেই",
-        "current নাই",
-        "current নেই",
-        "light নাই",
-        "লাইট নাই",
-        "লাইট নেই",
-    ]
-
-    if any(
-        word in t
-        for word in electricity_words
-    ):
-
-        return (
-            "বিদ্যুৎ না থাকার কয়েকটি কারণ হতে পারে—"
-            "লোডশেডিং, লাইনে ত্রুটি, সাবস্টেশনের সমস্যা "
-            "অথবা রক্ষণাবেক্ষণ। "
-            "আপনার এলাকার নির্দিষ্ট কারণ জানতে "
-            "স্থানীয় বিদ্যুৎ অফিসের আপডেট দেখা সবচেয়ে নির্ভরযোগ্য।"
-        )
-
-
-    # -----------------------------
-    # Internet
-    # -----------------------------
-
-    internet_words = [
-
-        "ইন্টারনেট নাই",
-        "ইন্টারনেট নেই",
-        "নেট নাই",
-        "নেট নেই",
-        "internet নাই",
-        "internet নেই",
-        "wifi নাই",
-        "wifi নেই",
-        "ওয়াইফাই নাই",
-        "ওয়াইফাই নেই",
-    ]
-
-    if any(
-        word in t
-        for word in internet_words
-    ):
-
-        return (
-            "ইন্টারনেট না থাকার কারণ হতে পারে "
-            "ISP-এর সমস্যা, রাউটার বা মোবাইল ডাটার সমস্যা, "
-            "নেটওয়ার্ক congestion অথবা maintenance। "
-            "আগে Wi-Fi/Data বন্ধ করে আবার চালু করে "
-            "অন্য একটি website বা app খুলে পরীক্ষা করে দেখুন।"
-        )
-
-
-    return None
-
-
-# =========================================================
 # OPENAI
 # =========================================================
 
 SYSTEM_PROMPT = """
-তুমি একটি Telegram group assistant bot।
+তুমি একটি Telegram group assistant।
 
-তোমার কাজ হলো মানুষের কথার অর্থ বুঝে স্বাভাবিক,
-helpful এবং context-aware উত্তর দেওয়া।
+ব্যবহারকারীর প্রশ্নের সরাসরি উত্তর দেবে।
 
-খুব গুরুত্বপূর্ণ নিয়ম:
+অকারণে এসব বলবে না:
+- আচ্ছা
+- ঠিক আছে
+- আরও একটু বলুন
+- আমি শুনছি
 
-1. ব্যবহারকারী সরাসরি প্রশ্ন করলে সরাসরি প্রশ্নের উত্তর দেবে।
+ব্যবহারকারী বাংলা লিখলে বাংলায় উত্তর দেবে।
+Banglish হলে সহজ Banglish/বাংলা ব্যবহার করবে।
+English হলে English-এ উত্তর দিতে পারবে।
 
-2. অকারণে:
-"আচ্ছা"
-"ঠিক আছে"
-"বলুন"
-"আরও একটু বলুন"
-"আমি শুনছি"
-এই ধরনের generic উত্তর দেবে না।
+প্রশ্ন বুঝতে না পারলে প্রয়োজনীয় clarification করবে।
 
-3. ব্যবহারকারী সাধারণভাবে কথা বললে স্বাভাবিকভাবে কথা বলবে।
+নিজের কাছে কোনো file, video বা media আছে বলে মিথ্যা বলবে না।
 
-4. ব্যবহারকারী বাংলা লিখলে বাংলায় উত্তর দেবে।
+Telegram-এর saved content system আলাদাভাবে program handle করে।
+তাই গান, নাটক, movie, video বা photo-এর saved content নিজে থেকে বানিয়ে দেওয়ার দাবি করবে না।
 
-5. Banglish হলে সহজ Banglish বা বাংলা ব্যবহার করবে।
+সঠিক তথ্য না জানলে নিশ্চিতভাবে ভুল তথ্য দেবে না।
 
-6. English হলে English-এ উত্তর দিতে পারবে।
-
-7. ব্যবহারকারীর প্রশ্ন না বুঝলে প্রয়োজনীয় clarification করবে।
-
-8. নিজের কাছে কোনো file বা media আছে বলে মিথ্যা বলবে না।
-
-9. Telegram saved content system-এর কাজ নিজে করার চেষ্টা করবে না।
-
-10. গান, নাটক, মুভি, ভিডিও বা ছবি চাওয়া হলে program-এর saved-content
-system সেই কাজ করবে।
-
-11. Content delivery সফল হলে program নিজে closing message পাঠাবে।
-তুমি সেই exact closing message লিখবে না।
-
-12. কোনো প্রশ্নের উত্তর জানা না থাকলে নিশ্চিত তথ্যের মতো মিথ্যা বলবে না।
-
-13. ব্যবহারকারী "হাই" বা "হ্যালো" বললে স্বাভাবিক greeting দেবে।
-Generic "আরও একটু বলুন" বলবে না।
-
-উত্তর সংক্ষিপ্ত, পরিষ্কার এবং ব্যবহারকারীর কথার সাথে সরাসরি সম্পর্কিত রাখবে।
+উত্তর সংক্ষিপ্ত, স্বাভাবিক ও helpful রাখবে।
 """
 
 
@@ -993,36 +837,26 @@ async def ai_reply(
 
     history = get_history(
         chat_id,
-        limit=12
+        10
     )
 
-    input_messages = []
+    messages = []
 
     for item in history:
 
-        role = item["role"]
-
-        if role not in (
-            "user",
-            "assistant"
-        ):
-            continue
-
-        input_messages.append({
-            "role": role,
+        messages.append({
+            "role": item["role"],
             "content": item["content"]
         })
 
-    # বর্তমান message history-তে না থাকলে যোগ করা
-    if (
-        not input_messages
-        or input_messages[-1]["content"]
-        != user_text
-        or input_messages[-1]["role"]
-        != "user"
+    # বর্তমান user message নিশ্চিত করা
+    if not messages or not (
+        messages[-1]["role"] == "user"
+        and
+        messages[-1]["content"] == user_text
     ):
 
-        input_messages.append({
+        messages.append({
             "role": "user",
             "content": user_text
         })
@@ -1030,27 +864,22 @@ async def ai_reply(
     try:
 
         response = await client.responses.create(
-
             model=OPENAI_MODEL,
-
             instructions=SYSTEM_PROMPT,
-
-            input=input_messages,
-
-            max_output_tokens=500,
+            input=messages,
+            max_output_tokens=500
         )
 
         answer = getattr(
             response,
             "output_text",
-            None
+            ""
         )
 
         if not answer:
 
             return (
-                "দুঃখিত, এখন উত্তর তৈরি করতে পারছি না। "
-                "একটু পরে আবার চেষ্টা করুন।"
+                "দুঃখিত, এখন উত্তর তৈরি করতে পারছি না।"
             )
 
         return answer.strip()
@@ -1063,7 +892,7 @@ async def ai_reply(
         )
 
         return (
-            "😔 দুঃখিত, এই মুহূর্তে AI response দিতে সমস্যা হচ্ছে। "
+            "😔 এই মুহূর্তে AI response দিতে সমস্যা হচ্ছে। "
             "একটু পরে আবার চেষ্টা করুন।"
         )
 
@@ -1074,13 +903,10 @@ async def ai_reply(
 
 async def get_weather():
 
-    lat = 24.1344
-    lon = 90.7860
-
     url = (
         "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}"
-        f"&longitude={lon}"
+        "?latitude=24.1344"
+        "&longitude=90.7860"
         "&current=temperature_2m,"
         "relative_humidity_2m,"
         "weather_code,"
@@ -1097,9 +923,7 @@ async def get_weather():
             timeout=timeout
         ) as session:
 
-            async with session.get(
-                url
-            ) as response:
+            async with session.get(url) as response:
 
                 if response.status != 200:
                     return None
@@ -1111,36 +935,12 @@ async def get_weather():
             {}
         )
 
-        temp = current.get(
-            "temperature_2m",
-            "?"
-        )
-
-        humidity = current.get(
-            "relative_humidity_2m",
-            "?"
-        )
-
-        wind = current.get(
-            "wind_speed_10m",
-            "?"
-        )
-
-        code = current.get(
-            "weather_code",
-            0
-        )
-
-        description = weather_description(
-            code
-        )
-
         return (
             f"🌤️ {PRAYER_CITY} Weather\n\n"
-            f"{description}\n"
-            f"🌡️ তাপমাত্রা: {temp}°C\n"
-            f"💧 আর্দ্রতা: {humidity}%\n"
-            f"💨 বাতাস: {wind} km/h"
+            f"{weather_description(current.get('weather_code', 0))}\n"
+            f"🌡️ তাপমাত্রা: {current.get('temperature_2m', '?')}°C\n"
+            f"💧 আর্দ্রতা: {current.get('relative_humidity_2m', '?')}%\n"
+            f"💨 বাতাস: {current.get('wind_speed_10m', '?')} km/h"
         )
 
     except Exception as e:
@@ -1155,9 +955,7 @@ async def get_weather():
 
 def weather_description(code):
 
-    code = int(
-        code or 0
-    )
+    code = int(code or 0)
 
     if code == 0:
         return "☀️ পরিষ্কার"
@@ -1173,9 +971,6 @@ def weather_description(code):
 
     if code in (61, 63, 65, 66, 67):
         return "🌧️ বৃষ্টি"
-
-    if code in (71, 73, 75, 77):
-        return "❄️ তুষার"
 
     if code in (80, 81, 82):
         return "🌧️ বৃষ্টির ঝাপটা"
@@ -1209,9 +1004,7 @@ async def get_prayer_times():
             timeout=timeout
         ) as session:
 
-            async with session.get(
-                url
-            ) as response:
+            async with session.get(url) as response:
 
                 if response.status != 200:
                     return None
@@ -1245,7 +1038,7 @@ async def get_prayer_times():
 
 
 # =========================================================
-# COMMANDS
+# ADMIN COMMANDS
 # =========================================================
 
 async def start_command(
@@ -1254,12 +1047,9 @@ async def start_command(
 ):
 
     await update.effective_message.reply_text(
-
         "👋 Welcome!\n\n"
-
         "আমি আপনার Telegram AI Assistant।\n"
-
-        "বাংলা, Banglish বা English-এ কথা বলতে পারেন।"
+        "বাংলা, Banglish অথবা English-এ কথা বলতে পারেন।"
     )
 
 
@@ -1272,15 +1062,13 @@ async def admin_command(
         return
 
     await update.effective_message.reply_text(
-
         "👑 Admin Panel\n\n"
-
-        "/addsong - নতুন content যোগ করুন\n"
-        "/list - saved content দেখুন\n"
-        "/stats - bot statistics\n"
-        "/delete ID - content delete\n"
-        "/broadcast TEXT - সবাইকে message\n"
-        "/admintest - admin test"
+        "/addsong - Content যোগ করুন\n"
+        "/list - Saved content\n"
+        "/stats - Statistics\n"
+        "/delete ID - Content delete\n"
+        "/broadcast TEXT - Broadcast\n"
+        "/admintest - Admin test"
     )
 
 
@@ -1315,10 +1103,8 @@ async def addsong_command(
     )
 
     await update.effective_message.reply_text(
-
-        "📥 এখন একটি Video / Audio / Photo / Document পাঠান।\n\n"
-
-        "তারপর আমি title চাইব।"
+        "📥 এখন Video / Audio / Photo / Document পাঠান।\n\n"
+        "Media পাওয়ার পর আমি Title চাইব।"
     )
 
 
@@ -1331,20 +1117,10 @@ async def list_command(
         return
 
     rows = db_execute("""
-
-        SELECT
-            id,
-            title,
-            media_type,
-            category,
-            created_at
-
+        SELECT id, title, media_type, category
         FROM contents
-
         ORDER BY id DESC
-
         LIMIT 50
-
     """, fetch=True)
 
     if not rows:
@@ -1362,16 +1138,13 @@ async def list_command(
     for row in rows:
 
         lines.append(
-
             f"ID: {row['id']}\n"
             f"🎬 {row['title']}\n"
             f"📁 {row['media_type']}\n"
             f"🏷️ {row['category']}\n"
-
         )
 
     await update.effective_message.reply_text(
-
         "\n".join(lines)[:4000]
     )
 
@@ -1385,29 +1158,27 @@ async def stats_command(
         return
 
     users = db_execute(
-        "SELECT COUNT(*) AS c FROM users",
+        "SELECT COUNT(*) c FROM users",
         fetchone=True
     )["c"]
 
     chats = db_execute(
-        "SELECT COUNT(*) AS c FROM chats",
+        "SELECT COUNT(*) c FROM chats",
         fetchone=True
     )["c"]
 
     contents = db_execute(
-        "SELECT COUNT(*) AS c FROM contents",
+        "SELECT COUNT(*) c FROM contents",
         fetchone=True
     )["c"]
 
     messages = db_execute(
-        "SELECT COUNT(*) AS c FROM messages",
+        "SELECT COUNT(*) c FROM messages",
         fetchone=True
     )["c"]
 
     await update.effective_message.reply_text(
-
         "📊 Bot Statistics\n\n"
-
         f"👤 Users: {users}\n"
         f"💬 Chats: {chats}\n"
         f"🎬 Contents: {contents}\n"
@@ -1432,7 +1203,6 @@ async def delete_command(
         return
 
     try:
-
         content_id = int(
             context.args[0]
         )
@@ -1440,20 +1210,16 @@ async def delete_command(
     except ValueError:
 
         await update.effective_message.reply_text(
-            "❌ ID অবশ্যই number হতে হবে।"
+            "❌ ID number হতে হবে।"
         )
 
         return
 
-    row = db_execute("""
-
-        SELECT title
-        FROM contents
-        WHERE id=?
-
-    """, (
-        content_id,
-    ), fetchone=True)
+    row = db_execute(
+        "SELECT title FROM contents WHERE id=?",
+        (content_id,),
+        fetchone=True
+    )
 
     if not row:
 
@@ -1469,7 +1235,6 @@ async def delete_command(
     )
 
     await update.effective_message.reply_text(
-
         f"✅ Deleted:\n{row['title']}"
     )
 
@@ -1489,9 +1254,7 @@ async def broadcast_command(
     if not text:
 
         await update.effective_message.reply_text(
-
-            "ব্যবহার করুন:\n"
-            "/broadcast আপনার message"
+            "ব্যবহার করুন:\n/broadcast আপনার message"
         )
 
         return
@@ -1506,12 +1269,10 @@ async def broadcast_command(
 
     for row in rows:
 
-        chat_id = row["chat_id"]
-
         try:
 
             await context.bot.send_message(
-                chat_id=chat_id,
+                chat_id=row["chat_id"],
                 text=text
             )
 
@@ -1525,16 +1286,13 @@ async def broadcast_command(
 
             print(
                 "BROADCAST ERROR:",
-                chat_id,
                 repr(e)
             )
 
             failed += 1
 
     await update.effective_message.reply_text(
-
         "📢 Broadcast শেষ।\n\n"
-
         f"✅ Sent: {success}\n"
         f"❌ Failed: {failed}"
     )
@@ -1545,19 +1303,12 @@ async def weather_command(
     context
 ):
 
-    weather = await get_weather()
+    result = await get_weather()
 
-    if weather:
-
-        await update.effective_message.reply_text(
-            weather
-        )
-
-    else:
-
-        await update.effective_message.reply_text(
-            "❌ Weather data পাওয়া যাচ্ছে না।"
-        )
+    await update.effective_message.reply_text(
+        result or
+        "❌ Weather data পাওয়া যাচ্ছে না।"
+    )
 
 
 async def prayer_command(
@@ -1565,19 +1316,12 @@ async def prayer_command(
     context
 ):
 
-    prayer = await get_prayer_times()
+    result = await get_prayer_times()
 
-    if prayer:
-
-        await update.effective_message.reply_text(
-            prayer
-        )
-
-    else:
-
-        await update.effective_message.reply_text(
-            "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
-        )
+    await update.effective_message.reply_text(
+        result or
+        "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
+    )
 
 
 # =========================================================
@@ -1634,10 +1378,8 @@ async def handle_admin_media(
     context.user_data[
         "pending_media"
     ] = {
-
         "media_type": media_type,
         "file_id": file_id
-
     }
 
     context.user_data[
@@ -1649,9 +1391,8 @@ async def handle_admin_media(
     ] = True
 
     await message.reply_text(
-
         "✅ Media পেয়েছি।\n\n"
-        "এখন content-এর Title লিখুন।"
+        "এখন Content-এর Title লিখুন।"
     )
 
     return True
@@ -1700,7 +1441,6 @@ async def handle_admin_title(
     )
 
     db_execute("""
-
         INSERT INTO contents (
             title,
             media_type,
@@ -1709,9 +1449,7 @@ async def handle_admin_title(
             added_by,
             created_at
         )
-
         VALUES (?, ?, ?, ?, ?, ?)
-
     """, (
         title,
         pending["media_type"],
@@ -1731,9 +1469,7 @@ async def handle_admin_title(
     ] = False
 
     await message.reply_text(
-
         "✅ Content সফলভাবে Saved হয়েছে!\n\n"
-
         f"🎬 Title: {title}\n"
         f"📁 Type: {pending['media_type']}\n"
         f"🏷️ Category: {category}"
@@ -1748,16 +1484,10 @@ def detect_category(title):
         title
     )
 
-    if (
-        "গান" in t
-        or "song" in t
-    ):
+    if "গান" in t or "song" in t:
         return "song"
 
-    if (
-        "নাটক" in t
-        or "drama" in t
-    ):
+    if "নাটক" in t or "drama" in t:
         return "drama"
 
     if (
@@ -1767,29 +1497,20 @@ def detect_category(title):
     ):
         return "movie"
 
-    if (
-        "ডান্স" in t
-        or "dance" in t
-    ):
+    if "ডান্স" in t or "dance" in t:
         return "dance"
 
-    if (
-        "ভিডিও" in t
-        or "video" in t
-    ):
+    if "ভিডিও" in t or "video" in t:
         return "video"
 
-    if (
-        "ছবি" in t
-        or "photo" in t
-    ):
+    if "ছবি" in t or "photo" in t:
         return "photo"
 
     return "other"
 
 
 # =========================================================
-# NORMAL MESSAGE
+# MAIN MESSAGE HANDLER
 # =========================================================
 
 async def handle_message(
@@ -1807,22 +1528,14 @@ async def handle_message(
     save_user(user)
     save_chat(chat)
 
-    # =====================================================
-    # ADMIN MEDIA
-    # =====================================================
-
-    handled = await handle_admin_media(
+    # Admin media
+    if await handle_admin_media(
         update,
         context
-    )
-
-    if handled:
+    ):
         return
 
-    # =====================================================
-    # TEXT ONLY
-    # =====================================================
-
+    # Text only
     if not message.text:
         return
 
@@ -1831,22 +1544,14 @@ async def handle_message(
     if not text:
         return
 
-    # =====================================================
-    # ADMIN TITLE
-    # =====================================================
-
-    handled = await handle_admin_title(
+    # Admin title
+    if await handle_admin_title(
         update,
         context
-    )
-
-    if handled:
+    ):
         return
 
-    # =====================================================
-    # RATE LIMIT
-    # =====================================================
-
+    # Rate limit
     if not check_rate_limit(
         user.id
     ):
@@ -1857,50 +1562,13 @@ async def handle_message(
 
         return
 
-    # =====================================================
-    # PENDING CONTENT
-    # =====================================================
+    # -----------------------------------------------------
+    # Content request
+    # -----------------------------------------------------
 
-    if get_pending_content(
-        chat.id,
-        user.id
-    ):
-
-        row = search_content(
-            text
-        )
-
-        if row:
-
-            clear_pending_content(
-                chat.id
-            )
-
-            await send_saved_content(
-                update,
-                row
-            )
-
-            return
+    if is_content_request(text):
 
         await message.reply_text(
-
-            "❌ এই নামে কোনো saved content পাওয়া যায়নি।\n\n"
-            "আরেকবার নামটি লিখে চেষ্টা করুন।"
-        )
-
-        return
-
-    # =====================================================
-    # CONTENT REQUEST
-    # =====================================================
-
-    if is_content_request(
-        text
-    ):
-
-        await message.reply_text(
-
             "👋 Welcome!\n"
             "⏳ একটু অপেক্ষা করুন, দিচ্ছি..."
         )
@@ -1922,30 +1590,60 @@ async def handle_message(
 
             return
 
-        set_pending_content(
+        set_pending(
             chat.id,
             user.id
         )
 
         await message.reply_text(
-
-            "❌ এই নামে কোনো saved content এখনো পাওয়া যায়নি।\n\n"
-
-            "📝 যে content চান তার নামটি লিখুন।\n"
-            "আমি আবার search করছি।"
+            "❌ এই নামে কোনো saved content পাওয়া যায়নি।\n\n"
+            "📝 যে content চান তার নামটি লিখুন।"
         )
 
         return
 
-    # =====================================================
-    # FIXED NATURAL REPLIES
-    # =====================================================
+    # -----------------------------------------------------
+    # Pending content
+    # -----------------------------------------------------
 
-    fixed_reply = get_fixed_reply(
+    if pending_exists(
+        chat.id,
+        user.id
+    ):
+
+        row = search_content(
+            text
+        )
+
+        if row:
+
+            clear_pending(
+                chat.id
+            )
+
+            await send_saved_content(
+                update,
+                row
+            )
+
+            return
+
+        await message.reply_text(
+            "❌ এই নামে কোনো saved content পাওয়া যায়নি।\n"
+            "আবার নামটি লিখুন।"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # Fixed replies
+    # -----------------------------------------------------
+
+    reply = fixed_reply(
         text
     )
 
-    if fixed_reply:
+    if reply:
 
         save_message(
             chat.id,
@@ -1958,94 +1656,76 @@ async def handle_message(
             chat.id,
             0,
             "assistant",
-            fixed_reply
+            reply
         )
 
         await message.reply_text(
-            fixed_reply
+            reply
         )
 
         return
 
-    # =====================================================
-    # WEATHER
-    # =====================================================
+    # -----------------------------------------------------
+    # Weather
+    # -----------------------------------------------------
 
     normalized = normalize_text(
         text
     )
 
     weather_words = [
-
         "আবহাওয়া",
         "weather",
         "বৃষ্টি হবে",
-        "বৃষ্টি আসবে",
         "আজ বৃষ্টি",
-        "তাপমাত্রা কত",
-        "temperature কত",
-        "temperature",
+        "বৃষ্টি আসবে",
+        "তাপমাত্রা",
+        "temperature"
     ]
 
     if any(
-        word in normalized
-        for word in weather_words
+        x in normalized
+        for x in weather_words
     ):
 
-        weather = await get_weather()
+        result = await get_weather()
 
-        if weather:
-
-            await message.reply_text(
-                weather
-            )
-
-        else:
-
-            await message.reply_text(
-                "❌ Weather data পাওয়া যাচ্ছে না।"
-            )
+        await message.reply_text(
+            result or
+            "❌ Weather data পাওয়া যাচ্ছে না।"
+        )
 
         return
 
-    # =====================================================
-    # PRAYER NATURAL QUESTION
-    # =====================================================
+    # -----------------------------------------------------
+    # Prayer
+    # -----------------------------------------------------
 
     prayer_words = [
-
         "নামাজের সময়",
         "নামাজের ওয়াক্ত",
         "নামাজ কখন",
         "আজকের নামাজ",
-        "prayer time",
-        "prayer times",
+        "prayer time"
     ]
 
     if any(
-        word in normalized
-        for word in prayer_words
+        x in normalized
+        for x in prayer_words
     ):
 
-        prayer = await get_prayer_times()
+        result = await get_prayer_times()
 
-        if prayer:
-
-            await message.reply_text(
-                prayer
-            )
-
-        else:
-
-            await message.reply_text(
-                "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
-            )
+        await message.reply_text(
+            result or
+            "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
+        )
 
         return
 
-    # =====================================================
-    # SAVE USER MESSAGE
-    # =====================================================
+    # -----------------------------------------------------
+    # AI
+    # -----------------------------------------------------
 
     save_message(
         chat.id,
@@ -2053,10 +1733,6 @@ async def handle_message(
         "user",
         text
     )
-
-    # =====================================================
-    # AI
-    # =====================================================
 
     answer = await ai_reply(
         chat.id,
@@ -2076,7 +1752,7 @@ async def handle_message(
 
 
 # =========================================================
-# HOURLY AUTOMATIC MESSAGES
+# HOURLY MESSAGES
 # =========================================================
 
 SPECIAL_MESSAGES = {
@@ -2111,8 +1787,8 @@ SPECIAL_MESSAGES = {
         "দিনের কাজ কেমন চলছে সবাই? 🙂",
 
     18:
-        "🌆 শুভ সন্ধ্যা সবাইকে! 🌆\n"
-        "দিনটা সুন্দরভাবে শেষ হোক। ❤️",
+        "🌆 শুভ সন্ধ্যা সবাইকে! ❤️\n"
+        "দিনটা সুন্দরভাবে শেষ হোক।",
 
     19:
         "📚 Study Time!\n"
@@ -2120,35 +1796,20 @@ SPECIAL_MESSAGES = {
 
     22:
         "🌙 রাত ১০টা!\n"
-        "অনেক রাত হয়েছে—সময়মতো ঘুমানোর চেষ্টা করুন। 😴",
+        "অনেক রাত হয়েছে—সময়মতো ঘুমানোর চেষ্টা করুন। 😴"
 }
 
 
 GENERIC_HOURS = {
 
-    11:
-        "🕐 এখন সময় ১১:০০ বাজে",
-
-    13:
-        "🕐 এখন সময় ১:০০ বাজে",
-
-    14:
-        "🕐 এখন সময় ২:০০ বাজে",
-
-    15:
-        "🕐 এখন সময় ৩:০০ বাজে",
-
-    17:
-        "🕐 এখন সময় ৫:০০ বাজে",
-
-    20:
-        "🕐 এখন সময় ৮:০০ বাজে",
-
-    21:
-        "🕐 এখন সময় ৯:০০ বাজে",
-
-    23:
-        "🕐 এখন সময় ১১:০০ বাজে",
+    11: "🕐 এখন সময় ১১:০০ বাজে",
+    13: "🕐 এখন সময় ১:০০ বাজে",
+    14: "🕐 এখন সময় ২:০০ বাজে",
+    15: "🕐 এখন সময় ৩:০০ বাজে",
+    17: "🕐 এখন সময় ৫:০০ বাজে",
+    20: "🕐 এখন সময় ৮:০০ বাজে",
+    21: "🕐 এখন সময় ৯:০০ বাজে",
+    23: "🕐 এখন সময় ১১:০০ বাজে"
 }
 
 
@@ -2169,31 +1830,21 @@ async def hourly_loop(
 
             if minute <= 1:
 
-                current_key = now.strftime(
+                key = now.strftime(
                     "%Y-%m-%d-%H"
                 )
 
-                last_hour = get_state(
+                last = get_state(
                     "last_auto_hour"
                 )
 
-                if last_hour != current_key:
+                if last != key:
 
-                    if hour in SPECIAL_MESSAGES:
-
-                        text = SPECIAL_MESSAGES[
-                            hour
-                        ]
-
-                    elif hour in GENERIC_HOURS:
-
-                        text = GENERIC_HOURS[
-                            hour
-                        ]
-
-                    else:
-
-                        text = None
+                    text = (
+                        SPECIAL_MESSAGES.get(hour)
+                        or
+                        GENERIC_HOURS.get(hour)
+                    )
 
                     if text:
 
@@ -2204,14 +1855,10 @@ async def hourly_loop(
 
                         for row in rows:
 
-                            chat_id = row[
-                                "chat_id"
-                            ]
-
                             try:
 
                                 await application.bot.send_message(
-                                    chat_id=chat_id,
+                                    chat_id=row["chat_id"],
                                     text=text
                                 )
 
@@ -2222,20 +1869,19 @@ async def hourly_loop(
                             except Exception as e:
 
                                 print(
-                                    "AUTO MESSAGE ERROR:",
-                                    chat_id,
+                                    "AUTO ERROR:",
                                     repr(e)
                                 )
 
                         set_state(
                             "last_auto_hour",
-                            current_key
+                            key
                         )
 
         except Exception as e:
 
             print(
-                "HOURLY LOOP ERROR:",
+                "HOURLY ERROR:",
                 repr(e)
             )
 
@@ -2245,7 +1891,7 @@ async def hourly_loop(
 
 
 # =========================================================
-# POST INIT
+# STARTUP
 # =========================================================
 
 async def post_init(
@@ -2265,7 +1911,7 @@ async def post_init(
     )
 
     print(
-        "BOT STARTED"
+        "BOT STARTED SUCCESSFULLY"
     )
 
     print(
@@ -2284,7 +1930,7 @@ async def post_init(
 
 
 # =========================================================
-# ERROR HANDLER
+# ERROR
 # =========================================================
 
 async def error_handler(
@@ -2306,19 +1952,12 @@ def main():
 
     app = (
         ApplicationBuilder()
-        .token(
-            BOT_TOKEN
-        )
-        .post_init(
-            post_init
-        )
+        .token(BOT_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
-    # -----------------------------------------------------
     # Commands
-    # -----------------------------------------------------
-
     app.add_handler(
         CommandHandler(
             "start",
@@ -2389,13 +2028,24 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
     # Normal messages
-    # -----------------------------------------------------
-
     app.add_handler(
         MessageHandler(
-            filters.ALL & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND,
+            handle_message
+        )
+    )
+
+    # Media messages
+    app.add_handler(
+        MessageHandler(
+            (
+                filters.VIDEO
+                | filters.AUDIO
+                | filters.PHOTO
+                | filters.Document.ALL
+                | filters.ANIMATION
+            ),
             handle_message
         )
     )
@@ -2413,10 +2063,6 @@ def main():
         drop_pending_updates=False
     )
 
-
-# =========================================================
-# START
-# =========================================================
 
 if __name__ == "__main__":
     main()
