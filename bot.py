@@ -1,184 +1,359 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Telegram AI Assistant & Media Bot - OpenAI Only
-Admin: @tomalchowdhury2 (ID: 8721334265)
+# bot.py
+# Telegram AI Assistant + Saved Content Bot
+# Python 3.10+
+#
+# Install:
+# pip install -U python-telegram-bot aiohttp openai
+#
+# Required environment variables:
+# BOT_TOKEN=...
+# ADMIN_ID=123456789
+#
+# Optional:
+# ADMIN_USERNAME=YourTelegramUsername
+# OPENAI_API_KEY=...
+# OPENAI_MODEL=gpt-5.6-mini
+# DB_PATH=bot.db
+#
+# ADMIN_USERNAME should NOT include @.
+#
+# This file keeps the features from the supplied bot:
+# AI chat, saved video/audio/photo/document/animation,
+# admin upload, list/stats/delete/broadcast, weather, prayer,
+# hourly messages, rate limit and SQLite storage.
+#
+# New behavior:
+# - Better intent/content detection for Bangla + Banglish + English.
+# - Fast Reply inline buttons.
+# - Missing-content suggestions from popular/trending saved content.
+# - Admin gets an automatic notification for unknown/error/problem cases.
+# - User gets a clickable "Admin" button.
+# - Admin uploads media -> bot asks title -> saves successfully.
+# - Popular content gets view_count increased when sent.
+# - Category-aware suggestions: song/drama/movie/dance/video/photo.
+# - AI is only used when fixed/content/weather/prayer handling does not apply.
+#
+# NOTE:
+# Telegram does not let a bot directly open a private chat with an arbitrary
+# user unless Telegram permits it. The tg://user?id=... button is the safest
+# clickable admin/user contact form supported by Telegram clients.
 
-Kept features:
-- OpenAI AI replies
-- Admin media upload -> title -> SQLite save
-- Drama/song/video search and delivery
-- Admin alerts
-- Weather and prayer times
-- Admin commands: /start /help /contact /admin /list /delete /stats
-
-Added:
-- Better group-message handling/logging
-- Removes any old Telegram webhook before polling
-- Saves groups when the bot is added
-- Hourly automatic reminders
-- Exact prayer-time automatic reminders
-- Study, sports and sleep reminders
-- /auto_on and /auto_off per chat
-
-Automatic schedule is configurable with environment variables:
-AUTO_MESSAGES_ENABLED=true
-STUDY_HOURS=7,10,15,19
-SPORTS_HOURS=17,21
-SLEEP_HOUR=23
-"""
-
-import os
-import re
-import time
 import asyncio
 import logging
+import os
+import re
 import sqlite3
+import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
-import pytz
 import aiohttp
-from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+try:
+    from openai import AsyncOpenAI
+except Exception:
+    AsyncOpenAI = None
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    WebAppInfo,
+)
+from telegram.constants import ChatType
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
-    ChatMemberHandler,
+    CommandHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# =========================================================
+# CONFIG
+# =========================================================
 
-load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8721334265") or 8721334265)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "tomalchowdhury2").strip().lstrip("@")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN_HERE")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip()
 
-ADMIN_IDS = [8721334265]
-ADMIN_USERNAME = "tomalchowdhury2"
+DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
 
-TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Dhaka")
-try:
-    TZ = pytz.timezone(TIMEZONE_NAME)
-except Exception:
-    TZ = pytz.timezone("Asia/Dhaka")
+TZ = timezone(timedelta(hours=6))  # Bangladesh
+PRAYER_CITY = os.getenv("PRAYER_CITY", "Bhairab").strip()
+PRAYER_COUNTRY = os.getenv("PRAYER_COUNTRY", "Bangladesh").strip()
 
-PRAYER_CITY = os.getenv("PRAYER_CITY", "Dhaka")
-PRAYER_COUNTRY = os.getenv("PRAYER_COUNTRY", "Bangladesh")
-PRAYER_METHOD = os.getenv("PRAYER_METHOD", "1")
-DB_FILE = os.getenv("DB_FILE", "bot_database.db")
+# AdsGram Mini App / WebApp settings.
+# In Render, set ADSGRAM_BLOCK_ID to the numeric block ID (e.g. 52042).
+# ADSGRAM_WEBAPP_URL must be the real HTTPS URL where ad.html is deployed.
+ADSGRAM_BLOCK_ID = os.getenv("ADSGRAM_BLOCK_ID", "").strip().lower()
+ADSGRAM_WEBAPP_URL = os.getenv("ADSGRAM_WEBAPP_URL", "").strip()
 
-AUTO_MESSAGES_ENABLED = os.getenv("AUTO_MESSAGES_ENABLED", "true").lower() in {
-    "1", "true", "yes", "on"
-}
+# Accept both "52042" and "bot-52042" so an existing Render value does not break the bot.
+ADSGRAM_BLOCK_ID = re.sub(r"^bot-", "", ADSGRAM_BLOCK_ID)
 
+RATE_LIMIT_SECONDS = 1.5
+MAX_HISTORY = 10
 
-def parse_hours(value, default):
-    result = []
-    for item in value.split(",") if value else []:
-        try:
-            h = int(item.strip())
-            if 0 <= h <= 23:
-                result.append(h)
-        except ValueError:
-            pass
-    return sorted(set(result)) or default
-
-
-STUDY_HOURS = parse_hours(os.getenv("STUDY_HOURS", "7,10,15,19"), [7, 10, 15, 19])
-SPORTS_HOURS = parse_hours(os.getenv("SPORTS_HOURS", "17,21"), [17, 21])
-SLEEP_HOUR = int(os.getenv("SLEEP_HOUR", "23"))
-WAKE_HOUR = int(os.getenv("WAKE_HOUR", "7"))
-WORK_HOURS = parse_hours(os.getenv("WORK_HOURS", "9,13,20"), [9, 13, 20])
+client = (
+    AsyncOpenAI(api_key=OPENAI_API_KEY)
+    if OPENAI_API_KEY and AsyncOpenAI
+    else None
+)
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger("telegram_bot")
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# OpenAI
-# ---------------------------------------------------------------------------
+# Per-user last message time.
+rate_state = {}
 
-openai_client = None
-if OPENAI_API_KEY:
-    try:
-        from openai import AsyncOpenAI
-        openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client configured successfully. Key=SET")
-    except Exception as e:
-        logger.warning("Could not initialize OpenAI client: %s", e)
-else:
-    logger.warning("OPENAI_API_KEY is missing. AI fallback will be used.")
+# User asks for a content name after bot says it can help.
+pending_content = {}
 
-# ---------------------------------------------------------------------------
-# Database
-# ---------------------------------------------------------------------------
+# Admin upload state is stored in context.user_data:
+# waiting_media -> waiting_title -> saved.
 
-def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+# =========================================================
+# CONTENT / REQUEST WORDS
+# =========================================================
+
+CONTENT_WORDS = [
+    "video",
+    "ভিডিও",
+    "ভিডিয়ো",
+    "ভিডিওটা",
+    "ভিডিওটি",
+    "গান",
+    "গানটা",
+    "গানটি",
+    "song",
+    "songs",
+    "audio",
+    "অডিও",
+    "নাটক",
+    "নাটকটা",
+    "নাটকটি",
+    "drama",
+    "movie",
+    "movies",
+    "মুভি",
+    "সিনেমা",
+    "ছবি",
+    "ছবিটা",
+    "ছবিটি",
+    "photo",
+    "picture",
+    "animation",
+    "document",
+    "ফাইল",
+    "file",
+    "ডান্স",
+    "dance",
+]
+
+REQUEST_WORDS = [
+    "দাও",
+    "দেন",
+    "দিবে",
+    "দিবেন",
+    "চাই",
+    "লাগবে",
+    "পাঠাও",
+    "পাঠান",
+    "send",
+    "give",
+    "want",
+    "please",
+    "দেখাও",
+    "দেখতে চাই",
+    "দেখবো",
+    "দেখব",
+    "দেখতে",
+    "পাবো",
+    "পাব",
+    "দিতে পারো",
+    "দিতে পারবেন",
+    "দিতে পারবে",
+]
+
+SONG_WORDS = [
+    "গান", "song", "songs", "music", "মিউজিক", "অডিও", "audio"
+]
+DRAMA_WORDS = [
+    "নাটক", "drama", "episode", "এপিসোড", "সিরিজ", "series"
+]
+MOVIE_WORDS = [
+    "মুভি", "movie", "movies", "সিনেমা", "film", "ফিল্ম"
+]
+DANCE_WORDS = [
+    "ডান্স", "dance", "নাচ"
+]
+PHOTO_WORDS = [
+    "ছবি", "photo", "picture", "pic", "image", "ফটো"
+]
+VIDEO_WORDS = [
+    "ভিডিও", "video", "clip", "reel", "রিল"
+]
+
+# =========================================================
+# TEXT HELPERS
+# =========================================================
+
+def normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text).strip().lower()
+    t = t.replace("ё", "е")
+    t = re.sub(r"[\u200b-\u200f\ufeff]", "", t)
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def contains_any(text: str, words) -> bool:
+    t = normalize_text(text)
+    return any(w in t for w in words)
+
+
+def detect_requested_category(text: str) -> Optional[str]:
+    t = normalize_text(text)
+
+    if contains_any(t, SONG_WORDS):
+        return "song"
+    if contains_any(t, DRAMA_WORDS):
+        return "drama"
+    if contains_any(t, MOVIE_WORDS):
+        return "movie"
+    if contains_any(t, DANCE_WORDS):
+        return "dance"
+    if contains_any(t, PHOTO_WORDS):
+        return "photo"
+    if contains_any(t, VIDEO_WORDS):
+        return "video"
+
+    return None
+
+
+def is_content_request(text: str) -> bool:
+    t = normalize_text(text)
+
+    # Explicit content + request.
+    if (
+        any(x in t for x in CONTENT_WORDS)
+        and any(x in t for x in REQUEST_WORDS)
+    ):
+        return True
+
+    # Natural short requests such as:
+    # "শাকিবের গান", "ওই নাটকটা", "Arijit song"
+    if detect_requested_category(t):
+        request_like = [
+            "চাই", "দাও", "দেন", "পাঠাও", "পাঠান",
+            "দেখাও", "দেখতে", "পাবো", "পাব",
+            "please", "give", "send", "want",
+            "ওই", "এই", "একটা", "একটি",
+        ]
+        if any(x in t for x in request_like):
+            return True
+
+    return False
+
+
+def extract_content_query(text: str) -> str:
+    t = normalize_text(text)
+
+    remove_words = (
+        CONTENT_WORDS
+        + REQUEST_WORDS
+        + [
+            "আমাকে", "একটা", "একটি", "আমার",
+            "প্লিজ", "please", "টা", "টি", "টাও",
+            "দিয়ে", "দিয়ে দাও", "দিয়ে দেন",
+            "দিতে", "পারো", "পারেন", "পারবে",
+            "কিছু", "একটু", "দেখতে",
+            "চাই", "চাচ্ছি",
+        ]
+    )
+
+    # Longest first so phrases are removed before individual words.
+    for word in sorted(set(remove_words), key=len, reverse=True):
+        t = re.sub(
+            r"(?<!\S)" + re.escape(word) + r"(?!\S)",
+            " ",
+            t,
+        )
+
+    t = re.sub(r"[^\w\u0980-\u09ff\s\-\.]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    return t
+
+
+def infer_query_without_request_words(text: str) -> str:
+    query = extract_content_query(text)
+    if query:
+        return query
+
+    # If user says only "গান দাও", query is empty. Category search will handle it.
+    return ""
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+def db_connect():
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def db_execute(query, params=(), fetchone=False, fetch=False, commit=True):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(query, params)
-        if commit:
-            conn.commit()
+def db_execute(sql, params=(), fetch=False, fetchone=False):
+    with db_connect() as conn:
+        cur = conn.execute(sql, params)
         if fetchone:
-            row = cur.fetchone()
-            return dict(row) if row else None
+            return cur.fetchone()
         if fetch:
-            return [dict(r) for r in cur.fetchall()]
+            return cur.fetchall()
+        conn.commit()
         return cur.lastrowid
 
 
 def init_db():
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
+    with db_connect() as conn:
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
+                username TEXT,
                 first_name TEXT,
                 last_name TEXT,
-                username TEXT,
-                joined_at TEXT
+                updated_at TEXT
             )
         """)
-        cur.execute("""
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id INTEGER PRIMARY KEY,
                 chat_type TEXT,
                 title TEXT,
                 username TEXT,
-                created_at TEXT,
-                notification_enabled INTEGER DEFAULT 1
+                updated_at TEXT
             )
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS contents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                media_type TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                category TEXT DEFAULT 'other',
-                views INTEGER DEFAULT 0,
-                added_by INTEGER,
-                created_at TEXT
-            )
-        """)
-        cur.execute("""
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER,
@@ -188,1306 +363,1851 @@ def init_db():
                 created_at TEXT
             )
         """)
-        cur.execute("""
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS contents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                category TEXT DEFAULT 'other',
+                added_by INTEGER,
+                view_count INTEGER DEFAULT 0,
+                created_at TEXT
+            )
+        """)
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS bot_state (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
         """)
 
-        # Backward compatibility with the user's existing DB.
-        cur.execute("PRAGMA table_info(contents)")
-        content_cols = [c[1] for c in cur.fetchall()]
-        if "views" not in content_cols:
-            cur.execute("ALTER TABLE contents ADD COLUMN views INTEGER DEFAULT 0")
+        # Safe migration for old databases.
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(contents)").fetchall()
+        }
 
-        cur.execute("PRAGMA table_info(chats)")
-        chat_cols = [c[1] for c in cur.fetchall()]
-        if "notification_enabled" not in chat_cols:
-            cur.execute(
-                "ALTER TABLE chats ADD COLUMN notification_enabled INTEGER DEFAULT 1"
+        if "view_count" not in cols:
+            conn.execute(
+                "ALTER TABLE contents ADD COLUMN view_count INTEGER DEFAULT 0"
             )
+
+        if "category" not in cols:
+            conn.execute(
+                "ALTER TABLE contents ADD COLUMN category TEXT DEFAULT 'other'"
+            )
+
+        if "added_by" not in cols:
+            conn.execute(
+                "ALTER TABLE contents ADD COLUMN added_by INTEGER"
+            )
+
+        if "created_at" not in cols:
+            conn.execute(
+                "ALTER TABLE contents ADD COLUMN created_at TEXT"
+            )
+
         conn.commit()
-    logger.info("Database initialized.")
 
 
-def now_str():
+def now_str() -> str:
     return datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def save_user(user):
     if not user:
         return
+
     db_execute("""
-        INSERT INTO users(user_id, first_name, last_name, username, joined_at)
+        INSERT INTO users (
+            user_id, username, first_name, last_name, updated_at
+        )
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
+            username=excluded.username,
             first_name=excluded.first_name,
             last_name=excluded.last_name,
-            username=excluded.username
-    """, (user.id, user.first_name or "", user.last_name or "",
-          user.username or "", now_str()))
+            updated_at=excluded.updated_at
+    """, (
+        user.id,
+        user.username or "",
+        user.first_name or "",
+        user.last_name or "",
+        now_str(),
+    ))
 
 
 def save_chat(chat):
     if not chat:
         return
+
+    title = (
+        getattr(chat, "title", None)
+        or getattr(chat, "first_name", None)
+        or ""
+    )
+
+    username = getattr(chat, "username", None) or ""
+
     db_execute("""
-        INSERT INTO chats(chat_id, chat_type, title, username, created_at, notification_enabled)
-        VALUES (?, ?, ?, ?, ?, 1)
+        INSERT INTO chats (
+            chat_id, chat_type, title, username, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(chat_id) DO UPDATE SET
             chat_type=excluded.chat_type,
             title=excluded.title,
-            username=excluded.username
-    """, (chat.id, chat.type, chat.title or "", chat.username or "", now_str()))
-
-
-def set_chat_notifications(chat_id, enabled):
-    db_execute(
-        "UPDATE chats SET notification_enabled=? WHERE chat_id=?",
-        (1 if enabled else 0, chat_id),
-    )
-
-
-def get_notification_chats():
-    return db_execute("""
-        SELECT chat_id, chat_type, title
-        FROM chats
-        WHERE notification_enabled=1
-        ORDER BY chat_id
-    """, fetch=True)
+            username=excluded.username,
+            updated_at=excluded.updated_at
+    """, (
+        chat.id,
+        chat.type,
+        title,
+        username,
+        now_str(),
+    ))
 
 
 def save_message(chat_id, user_id, role, content):
     db_execute("""
-        INSERT INTO messages(chat_id, user_id, role, content, created_at)
+        INSERT INTO messages (
+            chat_id, user_id, role, content, created_at
+        )
         VALUES (?, ?, ?, ?, ?)
-    """, (chat_id, user_id, role, content, now_str()))
+    """, (
+        chat_id,
+        user_id,
+        role,
+        content,
+        now_str(),
+    ))
 
 
-def get_history(chat_id, limit=8):
+def get_history(chat_id, limit=10):
     rows = db_execute("""
-        SELECT role, content FROM messages
-        WHERE chat_id=? ORDER BY id DESC LIMIT ?
+        SELECT role, content
+        FROM messages
+        WHERE chat_id=?
+        ORDER BY id DESC
+        LIMIT ?
     """, (chat_id, limit), fetch=True)
-    return rows[::-1] if rows else []
+
+    rows = list(reversed(rows))
+
+    # OpenAI roles must be user/assistant.
+    return [
+        {
+            "role": row["role"],
+            "content": row["content"],
+        }
+        for row in rows
+        if row["role"] in ("user", "assistant")
+    ]
 
 
 def get_state(key):
-    row = db_execute("SELECT value FROM bot_state WHERE key=?", (key,), fetchone=True)
+    row = db_execute(
+        "SELECT value FROM bot_state WHERE key=?",
+        (key,),
+        fetchone=True,
+    )
     return row["value"] if row else None
 
 
 def set_state(key, value):
     db_execute("""
-        INSERT INTO bot_state(key, value) VALUES (?, ?)
+        INSERT INTO bot_state(key, value)
+        VALUES (?, ?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
     """, (key, str(value)))
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-user_last_action = {}
+# =========================================================
+# ADMIN / USER CONTACT
+# =========================================================
 
-
-def check_rate_limit(user_id, interval=1.0):
-    current = time.time()
-    last = user_last_action.get(user_id, 0)
-    if current - last < interval:
-        return False
-    user_last_action[user_id] = current
-    return True
+def is_admin(user_id: int) -> bool:
+    return bool(ADMIN_ID and user_id == ADMIN_ID)
 
 
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
+async def admin_only(update: Update) -> bool:
+    user = update.effective_user
+    if user and is_admin(user.id):
+        return True
+
+    msg = update.effective_message
+    if msg:
+        await msg.reply_text("⛔ এই command শুধু Admin-এর জন্য।")
+
+    return False
 
 
-def normalize_text(text):
-    if not text:
-        return ""
-    text = text.lower()
-    text = re.sub(r"[^\w\s\u0980-\u09FF]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-# ---------------------------------------------------------------------------
-# Content search
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Large content-category system (60+ user/admin choices)
-# ---------------------------------------------------------------------------
-
-CONTENT_CATEGORIES = [
-    ("romantic", "❤️ রোমান্টিক"),
-    ("comedy", "😂 কমেডি"),
-    ("family", "👨‍👩‍👧 ফ্যামিলি"),
-    ("emotional", "😭 ইমোশনাল"),
-    ("love", "💖 ভালোবাসা"),
-    ("sad", "💔 দুঃখের"),
-    ("action", "💥 অ্যাকশন"),
-    ("thriller", "🕵️ থ্রিলার"),
-    ("horror", "👻 ভৌতিক"),
-    ("mystery", "🔍 রহস্য"),
-    ("adventure", "🏕️ অ্যাডভেঞ্চার"),
-    ("family_drama", "🏠 পারিবারিক নাটক"),
-    ("village", "🌾 গ্রামের গল্প"),
-    ("city", "🏙️ শহরের গল্প"),
-    ("school", "🏫 স্কুল জীবন"),
-    ("college", "🎓 কলেজ জীবন"),
-    ("office", "💼 অফিস/কাজ"),
-    ("friendship", "🤝 বন্ধুত্ব"),
-    ("couple", "💑 কাপল"),
-    ("breakup", "💔 ব্রেকআপ"),
-    ("marriage", "💍 বিয়ে"),
-    ("social", "🌍 সামাজিক"),
-    ("islamic", "🕌 ইসলামিক"),
-    ("motivational", "🔥 মোটিভেশনাল"),
-    ("educational", "📚 শিক্ষামূলক"),
-    ("funny", "🤣 হাসির"),
-    ("viral", "🚀 ভাইরাল"),
-    ("trending", "🔥 ট্রেন্ডিং"),
-    ("short", "⚡ শর্ট ভিডিও"),
-    ("tiktok", "📱 TikTok"),
-    ("reels", "🎞️ Reels"),
-    ("youtube", "▶️ YouTube"),
-    ("movie", "🎬 মুভি"),
-    ("webseries", "📺 ওয়েব সিরিজ"),
-    ("natok", "🎭 বাংলা নাটক"),
-    ("music", "🎵 গান"),
-    ("romantic_song", "🎶 রোমান্টিক গান"),
-    ("sad_song", "🎼 স্যাড গান"),
-    ("folk", "🪕 লোকগান"),
-    ("islamic_song", "🕋 ইসলামিক গান"),
-    ("gazal", "🎤 গজল"),
-    ("dance", "💃 ডান্স"),
-    ("sports", "🏆 স্পোর্টস"),
-    ("cricket", "🏏 ক্রিকেট"),
-    ("football", "⚽ ফুটবল"),
-    ("wrestling", "🤼 রেসলিং"),
-    ("news", "📰 নিউজ"),
-    ("technology", "💻 টেকনোলজি"),
-    ("gaming", "🎮 গেমিং"),
-    ("travel", "✈️ ভ্রমণ"),
-    ("nature", "🌿 প্রকৃতি"),
-    ("rain", "🌧️ বৃষ্টি"),
-    ("winter", "❄️ শীত"),
-    ("summer", "☀️ গরম"),
-    ("food", "🍔 খাবার"),
-    ("cooking", "👨‍🍳 রান্না"),
-    ("animals", "🐾 প্রাণী"),
-    ("kids", "🧒 শিশুদের"),
-    ("cartoon", "🧸 কার্টুন"),
-    ("documentary", "🎥 ডকুমেন্টারি"),
-    ("history", "🏛️ ইতিহাস"),
-    ("science", "🔬 বিজ্ঞান"),
-    ("health", "🩺 স্বাস্থ্য"),
-    ("fitness", "💪 ফিটনেস"),
-    ("lifestyle", "✨ লাইফস্টাইল"),
-    ("other", "📂 অন্যান্য"),
-]
-
-CATEGORY_LABELS = dict(CONTENT_CATEGORIES)
-CATEGORY_PAGE_SIZE = 12
-
-
-def category_buttons(page=0, prefix="usercat"):
-    total_pages = max(1, (len(CONTENT_CATEGORIES) + CATEGORY_PAGE_SIZE - 1) // CATEGORY_PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    start = page * CATEGORY_PAGE_SIZE
-    items = CONTENT_CATEGORIES[start:start + CATEGORY_PAGE_SIZE]
-    buttons = []
-    for i in range(0, len(items), 2):
-        row = []
-        for key, label in items[i:i + 2]:
-            row.append(InlineKeyboardButton(label, callback_data=f"{prefix}:{key}"))
-        buttons.append(row)
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_page:{page-1}"))
-    if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("🔽 See More", callback_data=f"{prefix}_page:{page+1}"))
-    if nav:
-        buttons.append(nav)
-    return buttons, page, total_pages
-
-
-def category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ"):
-    buttons, page, total_pages = category_buttons(page, prefix)
-    if prefix == "usercat":
-        text = (
-            f"{heading}\n\n"
-            "আপনার কোন ধরনের কন্টেন্ট লাগবে সেটা নিচের Category থেকে সিলেক্ট করুন। 👇\n"
-            f"📂 মোট Category: {len(CONTENT_CATEGORIES)}\n"
-            f"📄 Page {page+1}/{total_pages}"
-        )
-    else:
-        text = (
-            "🏷️ **Category নির্বাচন করুন**\n\n"
-            "ভিডিওটি কোন Category-তে রাখতে চান সেটা সিলেক্ট করুন। 👇\n"
-            f"📂 মোট Category: {len(CONTENT_CATEGORIES)}\n"
-            f"📄 Page {page+1}/{total_pages}"
-        )
-    return text, InlineKeyboardMarkup(buttons)
-
-
-def find_category_key(text):
-    norm = normalize_text(text)
-    aliases = {
-        "নাটক":"natok", "drama":"natok", "romantic":"romantic", "রোমান্টিক":"romantic",
-        "কমেডি":"comedy", "comedy":"comedy", "ফ্যামিলি":"family", "ইমোশনাল":"emotional",
-        "ভালোবাসা":"love", "দুঃখ":"sad", "অ্যাকশন":"action", "থ্রিলার":"thriller",
-        "ভৌতিক":"horror", "রহস্য":"mystery", "গ্রামের":"village", "ইসলামিক":"islamic",
-        "মোটিভেশন":"motivational", "শিক্ষামূলক":"educational", "ভাইরাল":"viral", "ট্রেন্ডিং":"trending",
-        "গান":"music", "song":"music", "গজল":"gazal", "ডান্স":"dance", "ক্রিকেট":"cricket",
-        "ফুটবল":"football", "স্পোর্টস":"sports", "মুভি":"movie", "ওয়েব সিরিজ":"webseries",
-        "বৃষ্টি":"rain", "গরম":"summer", "শীত":"winter", "ভ্রমণ":"travel", "খাবার":"food",
-        "গেমিং":"gaming", "টেক":"technology", "প্রকৃতি":"nature",
-    }
-    for alias, key in aliases.items():
-        if alias in norm:
-            return key
-    for key, label in CONTENT_CATEGORIES:
-        clean = normalize_text(label)
-        if key in norm or clean in norm:
-            return key
+def admin_url() -> Optional[str]:
+    if ADMIN_USERNAME:
+        return f"https://t.me/{ADMIN_USERNAME}"
+    if ADMIN_ID:
+        return f"tg://user?id={ADMIN_ID}"
     return None
 
-def detect_category(title):
-    t = normalize_text(title)
-    if any(x in t for x in ["নাটক", "drama", "natok"]):
-        return "drama"
-    if any(x in t for x in ["গান", "song", "audio", "গজল", "music"]):
-        return "song"
-    if any(x in t for x in ["মুভি", "movie", "cinema", "ফিল্ম"]):
-        return "movie"
-    if any(x in t for x in ["ডান্স", "dance"]):
-        return "dance"
-    if any(x in t for x in ["ছবি", "photo", "pic"]):
-        return "photo"
-    return "video"
 
+def admin_keyboard():
+    url = admin_url()
 
-def search_content(query, category=None):
-    query = normalize_text(query)
-    if not query:
+    if not url:
         return None
-    if category:
-        row = db_execute("""
-            SELECT * FROM contents
-            WHERE category=? AND lower(title) LIKE ?
-            ORDER BY views DESC, id DESC LIMIT 1
-        """, (category, f"%{query}%"), fetchone=True)
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👑 Admin-কে Message করুন", url=url)]
+    ])
+
+
+def user_contact_url(user_id: int) -> str:
+    return f"tg://user?id={user_id}"
+
+
+async def notify_admin(
+    context: ContextTypes.DEFAULT_TYPE,
+    reason: str,
+    update: Optional[Update] = None,
+    error: Optional[Exception] = None,
+):
+    if not ADMIN_ID:
+        logger.warning("ADMIN_ID is not configured; cannot notify admin.")
+        return
+
+    lines = [
+        "🚨 BOT ADMIN ALERT",
+        "",
+        f"📌 Reason: {reason}",
+    ]
+
+    user = update.effective_user if update else None
+    chat = update.effective_chat if update else None
+    msg = update.effective_message if update else None
+
+    if user:
+        display_name = " ".join(
+            x for x in [user.first_name, user.last_name]
+            if x
+        ).strip() or "Unknown"
+
+        username = f"@{user.username}" if user.username else "No username"
+
+        lines.extend([
+            "",
+            f"👤 User: {display_name}",
+            f"🆔 User ID: {user.id}",
+            f"🔗 Username: {username}",
+        ])
+
+    if chat:
+        lines.extend([
+            f"💬 Chat ID: {chat.id}",
+            f"📦 Chat type: {chat.type}",
+        ])
+
+    if msg and msg.text:
+        lines.extend([
+            "",
+            "📝 Message:",
+            msg.text[:1500],
+        ])
+
+    if error:
+        lines.extend([
+            "",
+            "❌ Error:",
+            repr(error)[:2000],
+        ])
+
+    keyboard = None
+    if user:
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "👤 User-কে Message",
+                    url=user_contact_url(user.id),
+                )
+            ]
+        ])
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="\n".join(lines)[:4000],
+            reply_markup=keyboard,
+        )
+    except Exception:
+        logger.exception("Failed to notify admin")
+
+
+# =========================================================
+# CONTENT SEARCH / TRENDING
+# =========================================================
+
+def detect_category(title: str) -> str:
+    t = normalize_text(title)
+
+    if contains_any(t, SONG_WORDS):
+        return "song"
+    if contains_any(t, DRAMA_WORDS):
+        return "drama"
+    if contains_any(t, MOVIE_WORDS):
+        return "movie"
+    if contains_any(t, DANCE_WORDS):
+        return "dance"
+    if contains_any(t, PHOTO_WORDS):
+        return "photo"
+    if contains_any(t, VIDEO_WORDS):
+        return "video"
+
+    return "other"
+
+
+def search_content(query: str, category: Optional[str] = None):
+    query = normalize_text(query)
+
+    # Exact-ish title search first.
+    if query:
+        if category:
+            row = db_execute("""
+                SELECT *
+                FROM contents
+                WHERE lower(title) LIKE ?
+                  AND category=?
+                ORDER BY view_count DESC, id DESC
+                LIMIT 1
+            """, (f"%{query}%", category), fetchone=True)
+        else:
+            row = db_execute("""
+                SELECT *
+                FROM contents
+                WHERE lower(title) LIKE ?
+                ORDER BY view_count DESC, id DESC
+                LIMIT 1
+            """, (f"%{query}%",), fetchone=True)
+
         if row:
             return row
 
-    row = db_execute("""
-        SELECT * FROM contents
-        WHERE lower(title) LIKE ?
-        ORDER BY views DESC, id DESC LIMIT 1
-    """, (f"%{query}%",), fetchone=True)
-    if row:
-        return row
+    # Word-based fallback.
+    words = [
+        x for x in query.split()
+        if len(x) >= 2
+    ]
 
-    words = [w for w in query.split() if len(w) >= 2][:4]
-    if not words:
-        return None
-    conds = ["lower(title) LIKE ?" for _ in words]
-    params = [f"%{w}%" for w in words]
-    if category:
-        sql = (
-            "SELECT * FROM contents WHERE category=? AND (" +
-            " OR ".join(conds) + ") ORDER BY views DESC, id DESC LIMIT 1"
+    if words:
+        conditions = []
+        params = []
+
+        for word in words[:8]:
+            conditions.append("lower(title) LIKE ?")
+            params.append(f"%{word}%")
+
+        category_sql = ""
+        if category:
+            category_sql = " AND category=?"
+            params.append(category)
+
+        row = db_execute(
+            f"""
+                SELECT *
+                FROM contents
+                WHERE ({" OR ".join(conditions)})
+                {category_sql}
+                ORDER BY view_count DESC, id DESC
+                LIMIT 1
+            """,
+            tuple(params),
+            fetchone=True,
         )
-        return db_execute(sql, (category, *params), fetchone=True)
-    sql = (
-        "SELECT * FROM contents WHERE (" + " OR ".join(conds) +
-        ") ORDER BY views DESC, id DESC LIMIT 1"
-    )
-    return db_execute(sql, tuple(params), fetchone=True)
+
+        if row:
+            return row
+
+    # If user asked only "গান দাও", return popular item of category.
+    if category:
+        return db_execute("""
+            SELECT *
+            FROM contents
+            WHERE category=?
+            ORDER BY view_count DESC, id DESC
+            LIMIT 1
+        """, (category,), fetchone=True)
+
+    return None
 
 
-def increment_views(content_id):
-    db_execute("UPDATE contents SET views=views+1 WHERE id=?", (content_id,))
+def get_popular(category: Optional[str] = None, limit=5):
+    if category:
+        return db_execute("""
+            SELECT *
+            FROM contents
+            WHERE category=?
+            ORDER BY view_count DESC, id DESC
+            LIMIT ?
+        """, (category, limit), fetch=True)
 
-
-def get_contents_by_category(category, limit=5):
     return db_execute("""
-        SELECT id,title,media_type,category,views FROM contents
-        WHERE category=? ORDER BY views DESC,id DESC LIMIT ?
-    """, (category, limit), fetch=True)
-
-
-def get_top_trending(limit=5):
-    return db_execute("""
-        SELECT id,title,media_type,category,views FROM contents
-        ORDER BY views DESC,id DESC LIMIT ?
+        SELECT *
+        FROM contents
+        ORDER BY view_count DESC, id DESC
+        LIMIT ?
     """, (limit,), fetch=True)
 
-# ---------------------------------------------------------------------------
-# OpenAI
-# ---------------------------------------------------------------------------
 
-SYSTEM_INSTRUCTIONS = f"""
-তুমি একটি চটপটে, নির্ভুল Telegram AI সহকারী।
-ব্যবহারকারীর প্রশ্নের সরাসরি ও পরিষ্কার উত্তর দেবে।
-বাংলায় প্রশ্ন হলে সুন্দর বাংলায়, Banglish হলে সহজ Banglish/বাংলায়,
-ইংরেজিতে প্রশ্ন হলে প্রাঞ্জল ইংরেজিতে উত্তর দেবে।
-অপ্রয়োজনীয় ভূমিকা দেবে না।
+def get_trending(category: Optional[str] = None, limit=5):
+    # Trending = recent content, with view count as the secondary ranking.
+    if category:
+        return db_execute("""
+            SELECT *
+            FROM contents
+            WHERE category=?
+            ORDER BY id DESC, view_count DESC
+            LIMIT ?
+        """, (category, limit), fetch=True)
 
-প্রধান অ্যাডমিন: @{ADMIN_USERNAME}
-User ID: {ADMIN_IDS[0]}
+    return db_execute("""
+        SELECT *
+        FROM contents
+        ORDER BY id DESC, view_count DESC
+        LIMIT ?
+    """, (limit,), fetch=True)
 
-মিডিয়া সম্পর্কে মিথ্যা দাবি করবে না। বটের ডেটাবেজে থাকা ফাইলই বট পাঠাতে পারে।
+
+def increment_view(content_id: int):
+    db_execute("""
+        UPDATE contents
+        SET view_count=COALESCE(view_count, 0)+1
+        WHERE id=?
+    """, (content_id,))
+
+
+def content_label(category: Optional[str]) -> str:
+    return {
+        "song": "গান",
+        "drama": "নাটক",
+        "movie": "মুভি",
+        "dance": "ডান্স ভিডিও",
+        "video": "ভিডিও",
+        "photo": "ছবি",
+        "other": "কনটেন্ট",
+        None: "কনটেন্ট",
+    }.get(category, "কনটেন্ট")
+
+
+# =========================================================
+# FAST REPLY / SUGGESTIONS
+# =========================================================
+
+def suggestion_keyboard(category: Optional[str] = None):
+    rows = []
+
+    if category:
+        rows.append([
+            InlineKeyboardButton(
+                f"🔥 জনপ্রিয় {content_label(category)}",
+                callback_data=f"popular:{category}",
+            ),
+            InlineKeyboardButton(
+                "📈 ট্রেন্ডিং",
+                callback_data=f"trending:{category}",
+            ),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(
+                "🔥 জনপ্রিয়",
+                callback_data="popular:all",
+            ),
+            InlineKeyboardButton(
+                "📈 ট্রেন্ডিং",
+                callback_data="trending:all",
+            ),
+        ])
+
+    rows.append([
+        InlineKeyboardButton(
+            "🎵 গান",
+            callback_data="popular:song",
+        ),
+        InlineKeyboardButton(
+            "🎬 নাটক",
+            callback_data="popular:drama",
+        ),
+    ])
+
+    admin = admin_url()
+    if admin:
+        rows.append([
+            InlineKeyboardButton(
+                "👑 Admin",
+                url=admin,
+            )
+        ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def format_suggestion_list(rows, heading: str) -> str:
+    if not rows:
+        return ""
+
+    lines = [heading, ""]
+
+    for i, row in enumerate(rows, 1):
+        views = int(row["view_count"] or 0)
+        lines.append(
+            f"{i}. {row['title']}  👁️ {views}"
+        )
+
+    return "\n".join(lines)
+
+
+async def send_suggestions(
+    update: Update,
+    category: Optional[str],
+    missing_query: str,
+):
+    message = update.effective_message
+    label = content_label(category)
+
+    popular = get_popular(category, 3)
+
+    if category == "drama":
+        if popular:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'}** নাটকটি এখনো আমার "
+                "saved content-এ নেই।\n\n"
+                "আপনি চাইলে নিচের বর্তমান/জনপ্রিয় নাটকগুলো দেখতে পারেন:"
+            )
+        else:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'}** নাটকটি এখনো নেই।\n\n"
+                "নতুন নাটক যোগ হলে এখানে পাওয়া যাবে।"
+            )
+
+    elif category == "song":
+        if popular:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'}** গানটি এখনো saved নেই।\n\n"
+                "চাইলে আমাদের জনপ্রিয় গানগুলোর একটি দিতে পারি:"
+            )
+        else:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'}** গানটি এখনো saved নেই।"
+            )
+
+    else:
+        if popular:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'} {label}** এখনো "
+                "saved content-এ নেই।\n\n"
+                f"চাইলে জনপ্রিয় {label} থেকে একটি দিতে পারি:"
+            )
+        else:
+            text = (
+                f"দুঃখিত, **{missing_query or 'এই'} {label}** এখনো নেই।"
+            )
+
+    await message.reply_text(
+        text,
+        reply_markup=suggestion_keyboard(category),
+    )
+
+
+# =========================================================
+# ADSGRAM WEBAPP AD
+# =========================================================
+
+def adsgram_keyboard():
+    """Return a Telegram WebApp button for AdsGram, when configured."""
+    if not ADSGRAM_WEBAPP_URL:
+        return None
+
+    if not ADSGRAM_WEBAPP_URL.startswith("https://"):
+        logger.warning("ADSGRAM_WEBAPP_URL must start with https://")
+        return None
+
+    label = "📺 বিজ্ঞাপন দেখুন"
+    if ADSGRAM_BLOCK_ID:
+        label = f"📺 Ad দেখুন • {ADSGRAM_BLOCK_ID}"
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            label,
+            web_app=WebAppInfo(url=ADSGRAM_WEBAPP_URL),
+        )]
+    ])
+
+
+async def send_adsgram_button(message):
+    """Show AdsGram entry point without blocking media delivery.
+
+    AdsGram's Mini App/WebApp is opened by the user from the button.
+    The bot does not force an ad watch before sending content.
+    """
+    markup = adsgram_keyboard()
+    if not markup:
+        return False
+
+    try:
+        await message.reply_text(
+            "💡 চাইলে আগে একটি বিজ্ঞাপন দেখতে পারেন।",
+            reply_markup=markup,
+        )
+        return True
+    except Exception:
+        logger.exception("ADSGRAM WEBAPP BUTTON ERROR")
+        return False
+
+
+# =========================================================
+# SEND SAVED CONTENT
+# =========================================================
+
+async def send_saved_content(
+    update: Update,
+    row,
+    context: Optional[ContextTypes.DEFAULT_TYPE] = None,
+):
+    message = update.effective_message
+
+    try:
+        # Ads are optional and non-blocking: the user can open the AdsGram
+        # WebApp, while the requested content is still delivered normally.
+        await send_adsgram_button(message)
+
+        await message.reply_text(
+            f"🎬 {row['title']}\n\n⏳ পাঠানো হচ্ছে..."
+        )
+
+        media_type = row["media_type"]
+        file_id = row["file_id"]
+
+        if media_type == "video":
+            await message.reply_video(
+                video=file_id,
+                supports_streaming=True,
+            )
+
+        elif media_type == "audio":
+            await message.reply_audio(
+                audio=file_id,
+            )
+
+        elif media_type == "photo":
+            await message.reply_photo(
+                photo=file_id,
+            )
+
+        elif media_type == "animation":
+            await message.reply_animation(
+                animation=file_id,
+            )
+
+        else:
+            await message.reply_document(
+                document=file_id,
+            )
+
+        increment_view(row["id"])
+
+        # Fast follow-up instead of unnecessary long text.
+        await message.reply_text(
+            "⚡ আরও কিছু লাগলে নিচের অপশন ব্যবহার করুন।",
+            reply_markup=suggestion_keyboard(row["category"]),
+        )
+
+        return True
+
+    except Exception as e:
+        logger.exception("CONTENT ERROR")
+
+        await message.reply_text(
+            "❌ Content পাঠাতে সমস্যা হয়েছে।"
+        )
+
+        if context:
+            await notify_admin(
+                context,
+                "Saved content send failed",
+                update,
+                e,
+            )
+
+        return False
+
+
+# =========================================================
+# PENDING CONTENT
+# =========================================================
+
+def set_pending(chat_id, user_id, category=None, original_query=""):
+    pending_content[chat_id] = {
+        "user_id": user_id,
+        "category": category,
+        "original_query": original_query,
+        "time": time.time(),
+    }
+
+
+def pending_exists(chat_id, user_id):
+    data = pending_content.get(chat_id)
+
+    if not data:
+        return False
+
+    if data["user_id"] != user_id:
+        return False
+
+    if time.time() - data["time"] > 600:
+        pending_content.pop(chat_id, None)
+        return False
+
+    return True
+
+
+def clear_pending(chat_id):
+    pending_content.pop(chat_id, None)
+
+
+# =========================================================
+# RATE LIMIT
+# =========================================================
+
+def check_rate_limit(user_id: int) -> bool:
+    now = time.monotonic()
+    last = rate_state.get(user_id, 0)
+
+    if now - last < RATE_LIMIT_SECONDS:
+        return False
+
+    rate_state[user_id] = now
+    return True
+
+
+# =========================================================
+# OPENAI
+# =========================================================
+
+SYSTEM_PROMPT = """
+তুমি একটি Telegram group assistant।
+
+তোমার প্রধান নিয়ম:
+1. ব্যবহারকারীর কথার উদ্দেশ্য বুঝে সরাসরি উত্তর দাও।
+2. বাংলা হলে স্বাভাবিক বাংলায় উত্তর দাও।
+3. Banglish হলে সহজ বাংলা/Banglish-এ উত্তর দাও।
+4. English হলে English-এ উত্তর দিতে পারো।
+5. অকারণে "আচ্ছা", "ঠিক আছে", "আরও বলুন", "আমি শুনছি" বলবে না।
+6. ব্যবহারকারী গান/নাটক/মুভি/ভিডিও/ছবি চাইলে saved-content system আগে থেকেই সেটা handle করে। তুমি নিজের কাছে media আছে বলে দাবি করবে না।
+7. কোনো তথ্য নিশ্চিত না হলে বানিয়ে বলবে না।
+8. উত্তর ছোট, পরিষ্কার, বন্ধুসুলভ এবং helpful রাখবে।
+9. ব্যবহারকারী রাগ করলে শান্তভাবে উত্তর দেবে।
+10. Admin বা human help দরকার হলে বলবে যে Admin-এর সাথে যোগাযোগ করা যাবে; কিন্তু saved content না থাকা অবস্থায় মিথ্যা promise করবে না।
 """
 
 
-async def generate_chatgpt_response(chat_id, user_text):
-    history = get_history(chat_id, limit=6)
-    if openai_client and OPENAI_API_KEY:
-        try:
-            inputs = []
-            for h in history:
-                inputs.append({
-                    "role": "assistant" if h["role"] == "assistant" else "user",
-                    "content": h["content"],
-                })
-            inputs.append({"role": "user", "content": user_text})
-            response = await asyncio.wait_for(
-                openai_client.responses.create(
-                    model=OPENAI_MODEL,
-                    instructions=SYSTEM_INSTRUCTIONS,
-                    input=inputs,
-                    max_output_tokens=650,
-                ),
-                timeout=20.0,
-            )
-            answer = getattr(response, "output_text", None)
-            if answer and answer.strip():
-                return answer.strip()
-            logger.error("OpenAI returned empty response.")
-        except asyncio.TimeoutError:
-            logger.error("OpenAI request timed out.")
-        except Exception as e:
-            logger.error("OpenAI AI error: %r", e)
-    return (
-        "👋 আপনার বার্তা পেয়েছি!\n\n"
-        "AI উত্তর দেওয়ার জন্য OpenAI API Key সঠিকভাবে সেট করা হয়নি "
-        "অথবা API request ব্যর্থ হয়েছে।\n\n"
-        f"গান/নাটক খুঁজতে নাম লিখুন, অথবা অ্যাডমিন @{ADMIN_USERNAME}-এর সাথে যোগাযোগ করুন।"
-    )
+async def ai_understand_message(chat_id: int, user_text: str) -> dict:
+    """Understand the user's meaning before routing the message.
 
-# ---------------------------------------------------------------------------
-# Admin notifications
-# ---------------------------------------------------------------------------
+    One small Responses API call decides whether this is normal chat,
+    content request, weather, prayer, help/admin, etc.  For content requests
+    it can also pick the closest saved content by ID when possible.
+    """
+    if not client:
+        return {
+            "intent": "unknown",
+            "category": None,
+            "query": "",
+            "content_id": None,
+            "reply": "",
+        }
 
-async def send_admin_alert(bot, text, reply_markup=None):
-    for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                chat_id=admin_id, text=text, parse_mode="Markdown",
-                reply_markup=reply_markup,
-            )
-        except Exception as e:
-            logger.error("Failed to notify admin %s: %s", admin_id, e)
+    history = get_history(chat_id, 8)
+    catalog_rows = db_execute("""
+        SELECT id, title, category
+        FROM contents
+        ORDER BY view_count DESC, id DESC
+        LIMIT 60
+    """, fetch=True)
 
+    catalog = [
+        {
+            "id": int(row["id"]),
+            "title": row["title"],
+            "category": row["category"],
+        }
+        for row in catalog_rows
+    ]
 
-async def notify_admin_missing_content(bot, user, content_type, query):
-    text = (
-        "📢 **[নতুন কন্টেন্টের ডিমান্ড]**\n\n"
-        f"👤 **ইউজার:** {user.first_name} (@{user.username or 'নাই'})\n"
-        f"🆔 **User ID:** `{user.id}`\n"
-        f"📁 **টাইপ:** {content_type}\n"
-        f"🔍 **রিকুয়েস্ট:** `{query}`\n"
-        f"⏰ **সময়:** {now_str()}\n\n"
-        f"👉 @{ADMIN_USERNAME} কন্টেন্টটি আপলোড করতে পারেন।"
-    )
-    keyboard = None
-    if user.username:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                f"✉️ Reply @{user.username}",
-                url=f"https://t.me/{user.username}",
-            )
-        ]])
-    await send_admin_alert(bot, text, keyboard)
+    prompt = {
+        "task": "Understand the user's message and choose the correct bot action.",
+        "user_message": user_text,
+        "recent_conversation": history,
+        "saved_content_catalog": catalog,
+        "rules": [
+            "Understand Bangla, Banglish and English naturally; do not rely on keywords.",
+            "If the user asks for any saved media/content, use intent content_request.",
+            "For content_request, infer category and the meaningful search query.",
+            "If a saved_content_catalog item clearly matches the user's request, return its numeric content_id.",
+            "Do not claim media exists unless content_id is selected or the database search later finds it.",
+            "If the user is simply chatting, answer like a helpful ChatGPT-style assistant in the user's language.",
+            "If the user asks about weather, use intent weather.",
+            "If the user asks about prayer/namaz times, use intent prayer.",
+            "If the user asks for admin/human help, use intent admin_help.",
+            "If a request is unclear, use intent clarify and write one short clarification question.",
+            "Return JSON only; no markdown and no extra text.",
+        ],
+        "json_format": {
+            "intent": "chat | content_request | weather | prayer | admin_help | clarify | unknown",
+            "category": "song | drama | movie | dance | video | photo | audio | document | animation | other | null",
+            "query": "short meaningful search phrase or empty string",
+            "content_id": "number or null",
+            "reply": "short natural-language reply for chat/admin_help/clarify/unknown; empty for content_request/weather/prayer",
+        },
+    }
 
-
-async def notify_admin_user_help(bot, user, user_msg):
-    text = (
-        "⚠️ **[ইউজার সাহায্য চেয়েছে]**\n\n"
-        f"👤 **User:** {user.first_name} (@{user.username or 'N/A'})\n"
-        f"🆔 **ID:** `{user.id}`\n"
-        f"⏰ **Time:** {now_str()}\n\n"
-        f"💬 **বার্তা:**\n_{user_msg}_"
-    )
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "💬 সরাসরি মেসেজ দিন",
-            url=(f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"),
-        )
-    ]])
-    await send_admin_alert(bot, text, keyboard)
-
-# ---------------------------------------------------------------------------
-# Media delivery / upload
-# ---------------------------------------------------------------------------
-
-async def deliver_media(update, row):
-    message = update.effective_message
-    content_id = row["id"]
-    media_type = row["media_type"]
-    file_id = row["file_id"]
-    title = row["title"]
-    increment_views(content_id)
-
-    await message.reply_text(
-        f"🎬 **{title}**\n\n⏳ পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...",
-        parse_mode="Markdown",
-    )
     try:
-        if media_type == "video":
-            await message.reply_video(video=file_id, caption=f"🎬 {title}", supports_streaming=True)
-        elif media_type == "audio":
-            await message.reply_audio(audio=file_id, caption=f"🎵 {title}")
-        elif media_type == "photo":
-            await message.reply_photo(photo=file_id, caption=f"🖼️ {title}")
-        elif media_type == "animation":
-            await message.reply_animation(animation=file_id, caption=f"✨ {title}")
-        else:
-            await message.reply_document(document=file_id, caption=f"📄 {title}")
-
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "💬 এডমিন: @" + ADMIN_USERNAME,
-                url=f"https://t.me/{ADMIN_USERNAME}",
-            )
-        ]])
-        await message.reply_text(
-            "✅ কন্টেন্ট সফলভাবে পাঠানো হয়েছে!\nআর কোনো নাটক বা গান লাগলে নাম লিখুন। 🤝",
-            reply_markup=keyboard,
+        response = await client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=(
+                "You are the intent router for a Telegram assistant. "
+                "Be accurate, concise, and return valid JSON only."
+            ),
+            input=[{
+                "role": "user",
+                "content": __import__("json").dumps(prompt, ensure_ascii=False),
+            }],
+            max_output_tokens=350,
         )
+        raw = (getattr(response, "output_text", "") or "").strip()
+        if not raw:
+            raise ValueError("Empty intent response")
+
+        # Be tolerant if the model accidentally wraps JSON in ```json ... ```.
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = __import__("json").loads(raw)
+
+        if not isinstance(data, dict):
+            raise ValueError("Intent response is not an object")
+
+        intent = str(data.get("intent") or "unknown").strip().lower()
+        allowed = {
+            "chat", "content_request", "weather", "prayer",
+            "admin_help", "clarify", "unknown",
+        }
+        if intent not in allowed:
+            intent = "unknown"
+
+        category = data.get("category")
+        if category is not None:
+            category = str(category).strip().lower()
+
+        content_id = data.get("content_id")
+        try:
+            content_id = int(content_id) if content_id is not None else None
+        except Exception:
+            content_id = None
+
+        return {
+            "intent": intent,
+            "category": category,
+            "query": str(data.get("query") or "").strip(),
+            "content_id": content_id,
+            "reply": str(data.get("reply") or "").strip(),
+        }
+
+    except Exception:
+        logger.exception("AI INTENT ROUTER ERROR")
+        raise
+
+
+async def ai_reply(chat_id: int, user_text: str) -> str:
+    if not client:
+        return (
+            "দুঃখিত, AI service এখন সেটআপ করা নেই। "
+            "আপনি চাইলে Admin-এর সাথে যোগাযোগ করতে পারেন।"
+        )
+
+    history = get_history(chat_id, MAX_HISTORY)
+
+    messages = []
+
+    for item in history:
+        messages.append({
+            "role": item["role"],
+            "content": item["content"],
+        })
+
+    if not messages or not (
+        messages[-1]["role"] == "user"
+        and messages[-1]["content"] == user_text
+    ):
+        messages.append({
+            "role": "user",
+            "content": user_text,
+        })
+
+    try:
+        response = await client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=SYSTEM_PROMPT,
+            input=messages,
+            max_output_tokens=500,
+        )
+
+        answer = getattr(response, "output_text", "") or ""
+
+        if not answer.strip():
+            return "দুঃখিত, এখন উত্তর তৈরি করতে পারছি না।"
+
+        return answer.strip()
+
     except Exception as e:
-        logger.error("Error sending media %s: %r", content_id, e)
-        await send_admin_alert(update.get_bot(), f"❌ Error sending file ID {content_id}: {e}")
-        await message.reply_text("❌ ফাইলটি পাঠাতে সমস্যা হয়েছে। এডমিনকে জানানো হয়েছে।")
+        logger.exception("OPENAI ERROR")
+        raise e
 
 
-async def handle_admin_media_upload(update, context):
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not is_admin(user.id):
-        return False
-
-    media_type = None
-    file_id = None
-    if message.video:
-        media_type, file_id = "video", message.video.file_id
-    elif message.audio:
-        media_type, file_id = "audio", message.audio.file_id
-    elif message.photo:
-        media_type, file_id = "photo", message.photo[-1].file_id
-    elif message.document:
-        media_type, file_id = "document", message.document.file_id
-    elif message.animation:
-        media_type, file_id = "animation", message.animation.file_id
-    if not file_id:
-        return False
-
-    context.user_data["pending_media"] = {"media_type": media_type, "file_id": file_id}
-    context.user_data["waiting_title"] = True
-    await message.reply_text(
-        f"📥 **{media_type.upper()} মিডিয়া ফাইল পেয়েছি!**\n\n"
-        "📝 এই কন্টেন্টের **নাম (Title)** লিখে পাঠান।\n"
-        "যেমন: `নতুন ঈদের নাটক` অথবা `বাংলা গান`",
-        parse_mode="Markdown",
-    )
-    return True
-
-
-async def handle_admin_title_save(update, context):
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not is_admin(user.id) or not context.user_data.get("waiting_title"):
-        return False
-    title = message.text.strip() if message.text else ""
-    if not title:
-        await message.reply_text("❌ Title খালি রাখা যাবে না।")
-        return True
-    pending = context.user_data.get("pending_media")
-    if not pending:
-        context.user_data["waiting_title"] = False
-        return False
-
-    context.user_data["pending_title"] = title
-    context.user_data["waiting_title"] = False
-    context.user_data["waiting_category"] = True
-    text, markup = category_prompt(prefix="admincat", page=0)
-    await message.reply_text(
-        f"✅ **নাম গ্রহণ করা হয়েছে:**\n🎬 {title}\n\n" + text,
-        reply_markup=markup,
-        parse_mode="Markdown",
-    )
-    return True
-
-
-
-# ---------------------------------------------------------------------------
-# Weather / Prayer
-# ---------------------------------------------------------------------------
+# =========================================================
+# WEATHER
+# =========================================================
 
 async def get_weather():
     url = (
         "https://api.open-meteo.com/v1/forecast"
-        "?latitude=23.8103&longitude=90.4125"
-        "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
+        "?latitude=24.1344"
+        "&longitude=90.7860"
+        "&current=temperature_2m,"
+        "relative_humidity_2m,"
+        "weather_code,"
+        "wind_speed_10m"
     )
+
     try:
-        timeout = aiohttp.ClientTimeout(total=6)
+        timeout = aiohttp.ClientTimeout(total=10)
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as res:
-                if res.status != 200:
+            async with session.get(url) as response:
+                if response.status != 200:
                     return None
-                data = await res.json()
-        c = data.get("current", {})
+                data = await response.json()
+
+        current = data.get("current", {})
+
         return (
-            f"🌤️ **{PRAYER_CITY} আবহাওয়া**\n\n"
-            f"🌡️ তাপমাত্রা: **{c.get('temperature_2m','?')}°C**\n"
-            f"💧 আর্দ্রতা: **{c.get('relative_humidity_2m','?')}%**\n"
-            f"💨 বাতাস: **{c.get('wind_speed_10m','?')} km/h**"
+            f"🌤️ {PRAYER_CITY} Weather\n\n"
+            f"{weather_description(current.get('weather_code', 0))}\n"
+            f"🌡️ তাপমাত্রা: {current.get('temperature_2m', '?')}°C\n"
+            f"💧 আর্দ্রতা: {current.get('relative_humidity_2m', '?')}%\n"
+            f"💨 বাতাস: {current.get('wind_speed_10m', '?')} km/h"
         )
-    except Exception as e:
-        logger.warning("Weather API error: %r", e)
+
+    except Exception:
+        logger.exception("WEATHER ERROR")
         return None
 
 
-async def get_prayer_data():
-    global _prayer_cache_date, _prayer_cache_data
-
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
-    if _prayer_cache_date == today and _prayer_cache_data:
-        return _prayer_cache_data
-
-    url = (
-        "https://api.aladhan.com/v1/timingsByCity"
-        f"?city={PRAYER_CITY}&country={PRAYER_COUNTRY}&method={PRAYER_METHOD}"
-    )
+def weather_description(code):
     try:
-        timeout = aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as res:
-                if res.status != 200:
-                    return None
-                data = await res.json()
-        timings = data.get("data", {}).get("timings", {})
-        if timings:
-            _prayer_cache_date = today
-            _prayer_cache_data = timings
-        return timings
-    except Exception as e:
-        logger.warning("Prayer API error: %r", e)
-        return None
+        code = int(code or 0)
+    except Exception:
+        code = 0
 
+    if code == 0:
+        return "☀️ পরিষ্কার"
+    if code in (1, 2, 3):
+        return "⛅ আংশিক মেঘলা"
+    if code in (45, 48):
+        return "🌫️ কুয়াশা"
+    if code in (51, 53, 55, 56, 57):
+        return "🌦️ গুঁড়ি গুঁড়ি বৃষ্টি"
+    if code in (61, 63, 65, 66, 67):
+        return "🌧️ বৃষ্টি"
+    if code in (80, 81, 82):
+        return "🌧️ বৃষ্টির ঝাপটা"
+    if code in (95, 96, 99):
+        return "⛈️ বজ্রসহ বৃষ্টি"
+
+    return "🌤️ আবহাওয়া পরিবর্তনশীল"
+
+
+# =========================================================
+# PRAYER
+# =========================================================
 
 async def get_prayer_times():
-    t = await get_prayer_data()
-    if not t:
+    url = (
+        "https://api.aladhan.com/v1/timingsByCity"
+        f"?city={PRAYER_CITY}"
+        f"&country={PRAYER_COUNTRY}"
+        "&method=1"
+    )
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return None
+                data = await response.json()
+
+        timings = data["data"]["timings"]
+
+        return (
+            f"🕌 {PRAYER_CITY} নামাজের সময়\n\n"
+            f"🌅 ফজর: {timings.get('Fajr', '-')}\n"
+            f"☀️ সূর্যোদয়: {timings.get('Sunrise', '-')}\n"
+            f"🕛 যোহর: {timings.get('Dhuhr', '-')}\n"
+            f"🌇 আসর: {timings.get('Asr', '-')}\n"
+            f"🌆 মাগরিব: {timings.get('Maghrib', '-')}\n"
+            f"🌙 এশা: {timings.get('Isha', '-')}"
+        )
+
+    except Exception:
+        logger.exception("PRAYER ERROR")
         return None
-    return (
-        f"🕌 **{PRAYER_CITY} নামাজের সময়সূচি**\n\n"
-        f"🌅 ফজর: **{t.get('Fajr','-')}**\n"
-        f"☀️ সূর্যোদয়: {t.get('Sunrise','-')}\n"
-        f"🕛 যোহর: **{t.get('Dhuhr','-')}**\n"
-        f"🌇 আসর: **{t.get('Asr','-')}**\n"
-        f"🌆 মাগরিব: **{t.get('Maghrib','-')}**\n"
-        f"🌙 এশা: **{t.get('Isha','-')}**"
-    )
-
-# ---------------------------------------------------------------------------
-# Automatic notifications
-# ---------------------------------------------------------------------------
-
-_prayer_cache_date = None
-_prayer_cache_data = None
-
-PRAYER_NAMES = {
-    "Fajr": "ফজর",
-    "Dhuhr": "যোহর",
-    "Asr": "আসর",
-    "Maghrib": "মাগরিব",
-    "Isha": "এশা",
-}
 
 
-def hourly_message(hour):
-    h12 = hour % 12 or 12
-    ampm = "AM" if hour < 12 else "PM"
-    text = f"🕐 **সময়: {h12}:00 {ampm} (বাংলাদেশ সময়)**\n\n"
+# =========================================================
+# FIXED REPLIES
+# =========================================================
 
-    if hour == WAKE_HOUR:
-        text += "🌅 **ঘুম থেকে ওঠার সময়!**\nসুপ্রভাত! ঘুম থেকে উঠে পানি পান করুন এবং আজকের দিনের পরিকল্পনা করুন। ☀️💧\n\n"
-    if hour in STUDY_HOURS:
-        text += "📚 **পড়াশোনার সময়!**\nএখন মনোযোগ দিয়ে পড়াশোনা/স্কিল শেখার জন্য সময় দিন। 📖\n\n"
-    if hour in SPORTS_HOURS:
-        text += "⚽ **খেলার/ব্যায়ামের সময়!**\nকিছুক্ষণ খেলাধুলা বা শরীরচর্চা করুন। 🏃‍♂️\n\n"
-    if hour in WORK_HOURS:
-        text += "💼 **কাজের সময়!**\nগুরুত্বপূর্ণ কাজগুলো গুছিয়ে করুন এবং মাঝে মাঝে ছোট বিরতি নিন। ✅\n\n"
-    if hour == SLEEP_HOUR:
-        text += "😴 **ঘুমানোর সময়!**\nসময়মতো ঘুমান, আগামী দিনের জন্য শরীর ও মনকে বিশ্রাম দিন। 🌙\n\n"
-    if hour == 12:
-        text += "🍚 দুপুর হয়েছে—খাওয়া, বিশ্রাম ও প্রয়োজনীয় কাজের সময় ঠিক রাখুন।\n\n"
-    if hour == 18:
-        text += "🌇 সন্ধ্যা হয়েছে। নামাজ ও পরিবারের জন্য কিছু সময় রাখুন।\n\n"
-    if (hour not in STUDY_HOURS and hour not in SPORTS_HOURS and hour not in WORK_HOURS
-            and hour != SLEEP_HOUR and hour != WAKE_HOUR):
-        text += "✅ আপনার কাজের তালিকা দেখে পরের এক ঘণ্টার লক্ষ্য ঠিক করুন।"
-    return text
+def fixed_reply(text: str) -> Optional[str]:
+    t = normalize_text(text)
 
+    greetings = [
+        "হাই", "হ্যালো", "hello", "hi", "hey",
+        "সালাম", "আসসালামু আলাইকুম",
+    ]
 
-async def send_to_enabled_chats(bot, text):
-    chats = get_notification_chats()
-    sent = 0
-    for row in chats:
-        try:
-            await bot.send_message(chat_id=row["chat_id"], text=text, parse_mode="Markdown")
-            sent += 1
-        except Exception as e:
-            # Bot may have been removed/blocked. Keep DB intact for now.
-            logger.warning("Auto message failed for chat %s: %s", row["chat_id"], e)
-    return sent
+    if any(x in t for x in greetings):
+        return (
+            "👋 হ্যালো! আমি আছি।\n"
+            "আপনি বাংলা, Banglish বা English-এ কথা বলতে পারেন।"
+        )
+
+    if t in ("ধন্যবাদ", "thanks", "thank you", "থ্যাংকস"):
+        return "❤️ স্বাগতম! আরও কিছু লাগলে বলুন।"
+
+    if t in ("কে তুমি", "তুমি কে", "who are you"):
+        return (
+            "🤖 আমি আপনার Telegram AI Assistant। "
+            "প্রশ্নের উত্তর দিতে এবং saved content খুঁজে দিতে পারি।"
+        )
+
+    return None
 
 
-async def send_hourly_notification(bot, now):
-    key = now.strftime("%Y-%m-%d-%H")
-    if get_state("last_hourly_notification") == key:
-        return
-    set_state("last_hourly_notification", key)
-    text = hourly_message(now.hour)
-    sent = await send_to_enabled_chats(bot, text)
-    logger.info("Hourly notification sent to %s chats.", sent)
-
-
-async def send_prayer_notifications(bot, now):
-    # Check only once per minute, but allow a 2-minute window if the process starts
-    # slightly late. State prevents duplicates.
-    timings = await get_prayer_data()
-    if not timings:
-        return
-    today = now.strftime("%Y-%m-%d")
-    current_minutes = now.hour * 60 + now.minute
-    for key, label in PRAYER_NAMES.items():
-        value = timings.get(key, "")
-        match = re.match(r"^(\d{1,2}):(\d{2})", str(value))
-        if not match:
-            continue
-        target = int(match.group(1)) * 60 + int(match.group(2))
-        if abs(current_minutes - target) <= 1:
-            state_key = f"prayer_sent_{today}_{key}"
-            if get_state(state_key) == "1":
-                continue
-            set_state(state_key, "1")
-            text = (
-                f"🕌 **{label} নামাজের সময় হয়েছে**\n\n"
-                f"⏰ সময়: **{value}**\n"
-                "🤲 নামাজ আদায়ের জন্য প্রস্তুত হোন।"
-            )
-            sent = await send_to_enabled_chats(bot, text)
-            logger.info("Prayer notification %s sent to %s chats.", label, sent)
-
-
-async def automatic_notification_loop(application):
-    logger.info(
-        "Automatic notifications started. Study=%s Sports=%s Sleep=%s",
-        STUDY_HOURS, SPORTS_HOURS, SLEEP_HOUR,
-    )
-    while True:
-        try:
-            if AUTO_MESSAGES_ENABLED:
-                now = datetime.now(TZ)
-                if now.minute == 0:
-                    await send_hourly_notification(application.bot, now)
-                await send_prayer_notifications(application.bot, now)
-            await asyncio.sleep(20)
-        except asyncio.CancelledError:
-            logger.info("Automatic notification loop stopped.")
-            raise
-        except Exception as e:
-            logger.error("Automatic notification loop error: %r", e)
-            await asyncio.sleep(20)
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
+# =========================================================
+# ADMIN COMMANDS
+# =========================================================
 
 async def start_command(update, context):
-    logger.info(
-        "START RECEIVED | chat_id=%s | chat_type=%s | user=%s",
-        update.effective_chat.id if update.effective_chat else None,
-        update.effective_chat.type if update.effective_chat else None,
-        update.effective_user.username if update.effective_user else None,
-    )
-    user = update.effective_user
-    save_user(user)
-    save_chat(update.effective_chat)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 নাটক চাই", callback_data="show_dramas"),
-         InlineKeyboardButton("🎵 গান চাই", callback_data="show_songs")],
-        [InlineKeyboardButton("🔥 ট্রেন্ডিং", callback_data="show_trending"),
-         InlineKeyboardButton("🌤️ আবহাওয়া", callback_data="show_weather")],
-        [InlineKeyboardButton("👑 এডমিন: @" + ADMIN_USERNAME,
-                              url=f"https://t.me/{ADMIN_USERNAME}")],
-    ])
     await update.effective_message.reply_text(
-        f"👋 আসসালামু আলাইকুম **{user.first_name}**!\n\n"
-        "আমি আপনার **AI Telegram Bot**।\n"
-        "✨ যেকোনো প্রশ্নের উত্তর দিতে পারি।\n"
-        "🎬 নাটক/গান/ভিডিওর নাম লিখে খুঁজতে পারেন।\n\n"
-        "💡 যা জানতে চান সরাসরি লিখুন।",
-        reply_markup=keyboard, parse_mode="Markdown",
+        "👋 Welcome!\n\n"
+        "আমি আপনার Telegram AI Assistant।\n"
+        "বাংলা, Banglish অথবা English-এ কথা বলতে পারেন।\n\n"
+        "🎬 গান/ভিডিও/নাটক চাইলে নামসহ বলুন।"
     )
 
 
-async def help_command(update, context):
-    await update.effective_message.reply_text(
-        "📖 **বটের ব্যবহারবিধি:**\n\n"
-        "1. যেকোনো প্রশ্ন লিখুন → OpenAI AI উত্তর দেবে।\n"
-        "2. নাটক/গান/ভিডিওর নাম লিখুন → ডেটাবেজে থাকলে পাঠাবে।\n"
-        "3. /trending → ট্রেন্ডিং কন্টেন্ট\n"
-        "4. /weather → আবহাওয়া\n"
-        "5. /prayer → নামাজের সময়\n"
-        "6. /auto_on → এই চ্যাটে অটো নোটিফিকেশন চালু\n"
-        "7. /auto_off → এই চ্যাটে অটো নোটিফিকেশন বন্ধ\n\n"
-        f"👑 প্রধান অ্যাডমিন: @{ADMIN_USERNAME}",
-        parse_mode="Markdown",
-    )
-
-
-async def contact_command(update, context):
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💬 এডমিনকে মেসেজ দিন", url=f"https://t.me/{ADMIN_USERNAME}")
-    ]])
-    await update.effective_message.reply_text(
-        f"👑 **এডমিন যোগাযোগ**\n\n@{ADMIN_USERNAME}\nID: `{ADMIN_IDS[0]}`",
-        reply_markup=keyboard, parse_mode="Markdown",
-    )
-
-
-async def admin_panel_command(update, context):
-    if not is_admin(update.effective_user.id):
-        await update.effective_message.reply_text("⛔ এই কমান্ডটি শুধুমাত্র এডমিনের জন্য।")
+async def admin_command(update, context):
+    if not await admin_only(update):
         return
+
     await update.effective_message.reply_text(
-        f"👑 **এডমিন প্যানেল (@{ADMIN_USERNAME})**\n\n"
-        "📥 ভিডিও/অডিও/ছবি পাঠান → বট Title চাইবে → DB-তে Save হবে।\n\n"
-        "/list - কন্টেন্ট তালিকা\n"
-        "/stats - পরিসংখ্যান\n"
-        "/delete <ID> - কন্টেন্ট ডিলিট\n"
-        "/auto_on / /auto_off - এই চ্যাটের অটো নোটিফিকেশন",
-        parse_mode="Markdown",
+        "👑 Admin Panel\n\n"
+        "/addsong - Content যোগ করুন\n"
+        "/list - Saved content\n"
+        "/stats - Statistics\n"
+        "/delete ID - Content delete\n"
+        "/broadcast TEXT - Broadcast\n"
+        "/admintest - Admin test"
+    )
+
+
+async def admintest_command(update, context):
+    if not await admin_only(update):
+        return
+
+    await update.effective_message.reply_text(
+        "✅ Admin verification successful."
+    )
+
+
+async def addsong_command(update, context):
+    if not await admin_only(update):
+        return
+
+    context.user_data["waiting_media"] = True
+    context.user_data.pop("pending_media", None)
+    context.user_data["waiting_title"] = False
+
+    await update.effective_message.reply_text(
+        "📥 এখন Video / Audio / Photo / Document / Animation পাঠান।\n\n"
+        "Media পাওয়ার পর আমি Title চাইব।"
     )
 
 
 async def list_command(update, context):
-    if not is_admin(update.effective_user.id):
+    if not await admin_only(update):
         return
+
     rows = db_execute("""
-        SELECT id,title,media_type,category,views FROM contents
-        ORDER BY id DESC LIMIT 30
+        SELECT id, title, media_type, category, view_count
+        FROM contents
+        ORDER BY id DESC
+        LIMIT 50
     """, fetch=True)
+
     if not rows:
-        await update.effective_message.reply_text("📭 এখনো কোনো কন্টেন্ট নেই।")
-        return
-    lines = ["📚 **সংরক্ষিত কন্টেন্ট:**\n"]
-    for r in rows:
-        lines.append(
-            f"🆔 `{r['id']}` | 🎬 **{r['title']}** | "
-            f"📁 {r['media_type']} | 👁️ {r['views']}"
+        await update.effective_message.reply_text(
+            "📭 এখনো কোনো saved content নেই।"
         )
-    await update.effective_message.reply_text("\n".join(lines)[:4000], parse_mode="Markdown")
-
-
-async def delete_command(update, context):
-    if not is_admin(update.effective_user.id):
         return
-    if not context.args:
-        await update.effective_message.reply_text("ব্যবহার: `/delete <ID>`", parse_mode="Markdown")
-        return
-    try:
-        cid = int(context.args[0])
-        db_execute("DELETE FROM contents WHERE id=?", (cid,))
-        await update.effective_message.reply_text(f"✅ ID `{cid}` ডিলিট হয়েছে।", parse_mode="Markdown")
-    except Exception as e:
-        await update.effective_message.reply_text(f"❌ ডিলিট করতে সমস্যা: {e}")
+
+    lines = ["📚 Saved Content", ""]
+
+    for row in rows:
+        lines.append(
+            f"ID: {row['id']}\n"
+            f"🎬 {row['title']}\n"
+            f"📁 {row['media_type']}\n"
+            f"🏷️ {row['category']}\n"
+            f"👁️ Views: {row['view_count'] or 0}\n"
+        )
+
+    await update.effective_message.reply_text(
+        "\n".join(lines)[:4000]
+    )
 
 
 async def stats_command(update, context):
-    if not is_admin(update.effective_user.id):
+    if not await admin_only(update):
         return
-    u = db_execute("SELECT COUNT(*) c FROM users", fetchone=True)["c"]
-    c = db_execute("SELECT COUNT(*) c FROM contents", fetchone=True)["c"]
-    v = db_execute("SELECT SUM(views) s FROM contents", fetchone=True)["s"] or 0
-    chats = db_execute("SELECT COUNT(*) c FROM chats", fetchone=True)["c"]
+
+    users = db_execute(
+        "SELECT COUNT(*) c FROM users",
+        fetchone=True,
+    )["c"]
+
+    chats = db_execute(
+        "SELECT COUNT(*) c FROM chats",
+        fetchone=True,
+    )["c"]
+
+    contents = db_execute(
+        "SELECT COUNT(*) c FROM contents",
+        fetchone=True,
+    )["c"]
+
+    messages = db_execute(
+        "SELECT COUNT(*) c FROM messages",
+        fetchone=True,
+    )["c"]
+
     await update.effective_message.reply_text(
-        f"📊 **বট স্ট্যাটিস্টিক্স**\n\n👤 ইউজার: **{u}**\n"
-        f"💬 চ্যাট: **{chats}**\n🎬 কন্টেন্ট: **{c}**\n👁️ ভিউ: **{v}**",
-        parse_mode="Markdown",
+        "📊 Bot Statistics\n\n"
+        f"👤 Users: {users}\n"
+        f"💬 Chats: {chats}\n"
+        f"🎬 Contents: {contents}\n"
+        f"💭 Messages: {messages}"
     )
 
 
-async def auto_on_command(update, context):
-    save_chat(update.effective_chat)
-    set_chat_notifications(update.effective_chat.id, True)
-    await update.effective_message.reply_text("🔔 এই চ্যাটে অটো নোটিফিকেশন চালু হয়েছে।")
-
-
-async def auto_off_command(update, context):
-    save_chat(update.effective_chat)
-    set_chat_notifications(update.effective_chat.id, False)
-    await update.effective_message.reply_text("🔕 এই চ্যাটে অটো নোটিফিকেশন বন্ধ হয়েছে।")
-
-
-async def notify_test_command(update, context):
-    if not is_admin(update.effective_user.id):
+async def delete_command(update, context):
+    if not await admin_only(update):
         return
-    await update.effective_message.reply_text(
-        hourly_message(datetime.now(TZ).hour), parse_mode="Markdown"
+
+    if not context.args:
+        await update.effective_message.reply_text(
+            "ব্যবহার করুন:\n/delete ID"
+        )
+        return
+
+    try:
+        content_id = int(context.args[0])
+    except ValueError:
+        await update.effective_message.reply_text(
+            "❌ ID number হতে হবে।"
+        )
+        return
+
+    row = db_execute(
+        "SELECT title FROM contents WHERE id=?",
+        (content_id,),
+        fetchone=True,
     )
 
-# ---------------------------------------------------------------------------
-# Callback queries
-# ---------------------------------------------------------------------------
+    if not row:
+        await update.effective_message.reply_text(
+            "❌ এই ID পাওয়া যায়নি।"
+        )
+        return
 
-async def handle_callback_query(update, context):
+    db_execute(
+        "DELETE FROM contents WHERE id=?",
+        (content_id,),
+    )
+
+    await update.effective_message.reply_text(
+        f"✅ Deleted:\n{row['title']}"
+    )
+
+
+async def broadcast_command(update, context):
+    if not await admin_only(update):
+        return
+
+    text = " ".join(context.args).strip()
+
+    if not text:
+        await update.effective_message.reply_text(
+            "ব্যবহার করুন:\n/broadcast আপনার message"
+        )
+        return
+
+    rows = db_execute(
+        "SELECT chat_id FROM chats",
+        fetch=True,
+    )
+
+    success = 0
+    failed = 0
+
+    for row in rows:
+        try:
+            await context.bot.send_message(
+                chat_id=row["chat_id"],
+                text=text,
+            )
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            logger.warning("BROADCAST ERROR: %r", e)
+            failed += 1
+
+    await update.effective_message.reply_text(
+        "📢 Broadcast শেষ।\n\n"
+        f"✅ Sent: {success}\n"
+        f"❌ Failed: {failed}"
+    )
+
+
+async def weather_command(update, context):
+    result = await get_weather()
+
+    await update.effective_message.reply_text(
+        result or "❌ Weather data পাওয়া যাচ্ছে না।"
+    )
+
+
+async def prayer_command(update, context):
+    result = await get_prayer_times()
+
+    await update.effective_message.reply_text(
+        result or "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
+    )
+
+
+# =========================================================
+# ADMIN MEDIA / TITLE
+# =========================================================
+
+async def handle_admin_media(update, context):
+    user = update.effective_user
+    message = update.effective_message
+
+    if not user or not is_admin(user.id):
+        return False
+
+    if not context.user_data.get("waiting_media"):
+        return False
+
+    media_type = None
+    file_id = None
+
+    if message.video:
+        media_type = "video"
+        file_id = message.video.file_id
+
+    elif message.audio:
+        media_type = "audio"
+        file_id = message.audio.file_id
+
+    elif message.photo:
+        media_type = "photo"
+        file_id = message.photo[-1].file_id
+
+    elif message.document:
+        media_type = "document"
+        file_id = message.document.file_id
+
+    elif message.animation:
+        media_type = "animation"
+        file_id = message.animation.file_id
+
+    if not file_id:
+        return False
+
+    context.user_data["pending_media"] = {
+        "media_type": media_type,
+        "file_id": file_id,
+    }
+
+    context.user_data["waiting_media"] = False
+    context.user_data["waiting_title"] = True
+
+    await message.reply_text(
+        "✅ Media পেয়েছি।\n\n"
+        "এখন Content-এর Title লিখুন।"
+    )
+
+    return True
+
+
+async def handle_admin_title(update, context):
+    user = update.effective_user
+    message = update.effective_message
+
+    if not user or not is_admin(user.id):
+        return False
+
+    if not context.user_data.get("waiting_title"):
+        return False
+
+    title = (message.text or "").strip()
+
+    if not title:
+        await message.reply_text(
+            "❌ Title খালি রাখা যাবে না।"
+        )
+        return True
+
+    pending = context.user_data.get("pending_media")
+
+    if not pending:
+        context.user_data["waiting_title"] = False
+        return False
+
+    category = detect_category(title)
+
+    content_id = db_execute("""
+        INSERT INTO contents (
+            title,
+            media_type,
+            file_id,
+            category,
+            added_by,
+            view_count,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, 0, ?)
+    """, (
+        title,
+        pending["media_type"],
+        pending["file_id"],
+        category,
+        user.id,
+        now_str(),
+    ))
+
+    context.user_data.pop("pending_media", None)
+    context.user_data["waiting_title"] = False
+
+    await message.reply_text(
+        "✅ Content সফলভাবে Saved হয়েছে!\n\n"
+        f"🆔 ID: {content_id}\n"
+        f"🎬 Title: {title}\n"
+        f"📁 Type: {pending['media_type']}\n"
+        f"🏷️ Category: {category}\n\n"
+        "⚡ এখন User নাম লিখে চাইলে Bot সরাসরি পাঠাবে।"
+    )
+
+    return True
+
+
+# =========================================================
+# CALLBACK / FAST REPLY
+# =========================================================
+
+async def callback_handler(update: Update, context):
     query = update.callback_query
-    await query.answer()
-    data = query.data
 
-    # Admin: category pagination and final category selection.
-    if data.startswith("admincat_page:"):
-        try:
-            page = int(data.split(":", 1)[1])
-        except ValueError:
-            page = 0
-        text, markup = category_prompt(prefix="admincat", page=page)
-        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = query.data or ""
+
+    if ":" not in data:
         return
 
-    if data.startswith("admincat:"):
-        key = data.split(":", 1)[1]
-        if not is_admin(query.from_user.id):
-            await query.message.reply_text("❌ শুধু Admin Category নির্বাচন করতে পারবেন।")
-            return
-        if not context.user_data.get("waiting_category"):
-            await query.message.reply_text("ℹ️ বর্তমানে কোনো ভিডিও Category নির্বাচন করার অপেক্ষায় নেই।")
-            return
-        pending = context.user_data.get("pending_media")
-        title = context.user_data.get("pending_title")
-        if not pending or not title:
-            await query.message.reply_text("❌ Pending upload পাওয়া যায়নি। ভিডিওটি আবার পাঠান।")
-            return
-        label = CATEGORY_LABELS.get(key, "📂 অন্যান্য")
-        new_id = db_execute("""
-            INSERT INTO contents(title,media_type,file_id,category,views,added_by,created_at)
-            VALUES (?,?,?,?,0,?,?)
-        """, (title, pending["media_type"], pending["file_id"], key, query.from_user.id, now_str()))
-        context.user_data.pop("pending_media", None)
-        context.user_data.pop("pending_title", None)
-        context.user_data["waiting_category"] = False
-        await query.message.reply_text(
-            "🎉 **SUCCESSFUL! কন্টেন্ট সংরক্ষণ হয়েছে।**\n\n"
-            f"🆔 ID: `{new_id}`\n"
-            f"🎬 Title: **{title}**\n"
-            f"📁 Media: `{pending['media_type']}`\n"
-            f"🏷️ Category: **{label}**\n\n"
-            "👤 User এখন এই Category সিলেক্ট করলে কন্টেন্টটি পাবে।",
-            parse_mode="Markdown",
+    action, category = data.split(":", 1)
+
+    if category == "all":
+        category = None
+
+    if action in ("popular", "trending"):
+        rows = (
+            get_popular(category, 5)
+            if action == "popular"
+            else get_trending(category, 5)
         )
-        return
 
-    # User: category pagination and content selection.
-    if data.startswith("usercat_page:"):
-        try:
-            page = int(data.split(":", 1)[1])
-        except ValueError:
-            page = 0
-        text, markup = category_prompt(prefix="usercat", page=page)
-        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
-        return
-
-    if data.startswith("usercat:"):
-        key = data.split(":", 1)[1]
-        label = CATEGORY_LABELS.get(key, key)
-        items = get_contents_by_category(key, 10)
-        if not items:
-            username = query.from_user.username
-            who = f"@{username}" if username else f"ID {query.from_user.id}"
+        if not rows:
             await query.message.reply_text(
-                "😔 **Sorry!** আপনার চাওয়া অনুযায়ী কন্টেন্ট এখনো এখানে আসে নাই।\n\n"
-                "📩 আমি এখনই আমার বসকে জানিয়ে দিচ্ছি যেন দ্রুত এই Category-তে কন্টেন্ট যোগ করা হয়।\n"
-                f"👤 আপনার Username: {who}\n\n"
-                "নতুন কন্টেন্ট এলে আবার চেষ্টা করুন। ❤️",
-                parse_mode="Markdown",
-            )
-            await notify_admin_missing_content(
-                context.bot, query.from_user, label, f"Category request: {label}"
+                f"📭 এখনো কোনো {content_label(category)} saved নেই।"
             )
             return
+
+        heading = (
+            f"🔥 জনপ্রিয় {content_label(category)}:"
+            if action == "popular"
+            else f"📈 ট্রেন্ডিং {content_label(category)}:"
+        )
+
         buttons = []
-        for item in items:
-            buttons.append([InlineKeyboardButton(
-                f"🎬 {item['title'][:55]}", callback_data=f"send_media_{item['id']}"
-            )])
-        buttons.append([InlineKeyboardButton("⬅️ Category List", callback_data="usercat_page:0")])
+        for row in rows:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"▶️ {row['title']}",
+                    callback_data=f"send:{row['id']}",
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "🔄 আবার দেখুন",
+                callback_data=f"{action}:{category or 'all'}",
+            )
+        ])
+
         await query.message.reply_text(
-            f"📂 **{label}**\n\nআপনার জন্য পাওয়া কন্টেন্টগুলো নিচে আছে। যেটি চান সেটি সিলেক্ট করুন:",
-            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown",
+            heading,
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
         return
 
-    if data == "show_dramas":
-        text, markup = category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ")
-        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
-        return
-
-    if data == "show_songs":
-        # Songs also use the same large Category browser.
-        text, markup = category_prompt(prefix="usercat", page=0, heading="🎵 গান বিভাগ")
-        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
-        return
-
-    if data == "show_trending":
-        items = get_top_trending(5)
-        if not items:
-            await query.message.reply_text("📭 কোনো কন্টেন্ট নেই।")
-            return
-        lines = ["🔥 **ট্রেন্ডিং কন্টেন্ট:**\n"]
-        buttons = []
-        for i, x in enumerate(items, 1):
-            buttons.append([InlineKeyboardButton(
-                f"{i}. 🎬 {x['title'][:55]}", callback_data=f"send_media_{x['id']}"
-            )])
-        await query.message.reply_text(
-            "\n".join(lines) + "যেটি চান সিলেক্ট করুন:",
-            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
-        )
-        return
-
-    if data == "show_weather":
-        await query.message.reply_text((await get_weather()) or "❌ আবহাওয়া তথ্য পাওয়া যায়নি।")
-        return
-
-    if data.startswith("send_media_"):
+    if action == "send":
         try:
-            cid = int(data.split("_")[-1])
+            content_id = int(category)
         except ValueError:
-            await query.message.reply_text("❌ ID সঠিক নয়।")
             return
-        row = db_execute("SELECT * FROM contents WHERE id=?", (cid,), fetchone=True)
-        if row:
-            await deliver_media(update, row)
-        else:
-            await query.message.reply_text("❌ কন্টেন্ট পাওয়া যায়নি।")
+
+        row = db_execute(
+            "SELECT * FROM contents WHERE id=?",
+            (content_id,),
+            fetchone=True,
+        )
+        if not row:
+            await query.message.reply_text("❌ এই content আর পাওয়া যাচ্ছে না।")
+            return
+
+        # callback updates need a lightweight Update-compatible path; the
+        # original message belongs to the same chat, so reply methods work.
+        try:
+            # Show the optional AdsGram WebApp button before callback content too.
+            await send_adsgram_button(query.message)
+
+            media_type = row["media_type"]
+            file_id = row["file_id"]
+            if media_type == "video":
+                await query.message.reply_video(video=file_id, supports_streaming=True)
+            elif media_type == "audio":
+                await query.message.reply_audio(audio=file_id)
+            elif media_type == "photo":
+                await query.message.reply_photo(photo=file_id)
+            elif media_type == "animation":
+                await query.message.reply_animation(animation=file_id)
+            else:
+                await query.message.reply_document(document=file_id)
+            increment_view(row["id"])
+        except Exception as e:
+            await query.message.reply_text("❌ Content পাঠাতে সমস্যা হয়েছে।")
+            await notify_admin(context, "Fast-reply content send failed", update, e)
         return
 
-# ---------------------------------------------------------------------------
-# Group/member update handling
-# ---------------------------------------------------------------------------
 
-async def my_chat_member_handler(update, context):
-    cm = update.my_chat_member
-    if not cm or not cm.chat:
-        return
-    save_chat(cm.chat)
-    logger.info(
-        "MY_CHAT_MEMBER | chat_id=%s | type=%s | old=%s | new=%s",
-        cm.chat.id, cm.chat.type,
-        cm.old_chat_member.status, cm.new_chat_member.status,
-    )
+# =========================================================
+# MAIN MESSAGE HANDLER
+# =========================================================
 
-
-# ---------------------------------------------------------------------------
-# Smart everyday replies: 1000+ possible variants from reusable phrase banks
-# ---------------------------------------------------------------------------
-
-RAIN_OPENERS = [
-    "আহা, আজ তো বৃষ্টি! 🌧️", "বৃষ্টি নামলেই মনটা অন্যরকম হয়ে যায়। ☔",
-    "আজ আকাশের মুড একদম বৃষ্টিময়। 🌧️", "বৃষ্টি দেখলেই চা-বিস্কুটের কথা মনে পড়ে! ☕🌧️",
-    "আজকের আবহাওয়া প্রেম করার অজুহাত দিচ্ছে। 😄🌧️", "বৃষ্টি মানেই একটু শান্তি, একটু স্মৃতি। ☔",
-    "বৃষ্টি এসেছে, ছাতা কোথায়? 😄☔", "আজ মেঘগুলো বেশ আবেগী! 🌧️❤️",
-]
-RAIN_CAPTIONS = [
-    "বৃষ্টি পড়ুক, মনটা একটু ভিজুক—কিন্তু মোবাইলটা শুকনো রাখবেন! 😂📱",
-    "বৃষ্টি + চা + জানালার পাশে বসা = আজকের অফিসিয়াল প্ল্যান। ☕🌧️",
-    "বৃষ্টি হচ্ছে, এখন শুধু একজন বলবে—‘চলো ভিজতে যাই!’ 😄☔",
-    "ছাতা আছে, কিন্তু বৃষ্টিতে ভেজার অজুহাত নেই! 😂",
-    "বৃষ্টি দেখে মনে হচ্ছে আকাশও আজ ছুটি নিয়েছে। 😴🌧️",
-    "বৃষ্টি যতই হোক, Wi‑Fi যেন না যায়—এই দোয়া করুন! 😂📶",
-    "আজকের ক্যাপশন: বৃষ্টি পড়ছে, মন বলছে চা চাই! ☕❤️",
-    "বৃষ্টির দিনে রাস্তা ভেজে, আর পুরোনো স্মৃতিগুলো শুকায় না। 🌧️💭",
-]
-HEAT_REPLIES = [
-    "আজ গরম বেশি হলে বারবার পানি পান করুন। 💧 শরীরকে ঠান্ডা রাখুন এবং সম্ভব হলে ছায়ায়/ঠান্ডা জায়গায় থাকুন।",
-    "গরমে পানিশূন্যতা এড়াতে পানি ও প্রয়োজনমতো ওরস্যালাইন/তরল পান করুন। ☀️💧",
-    "আজ যদি খুব গরম লাগে, বাইরে অপ্রয়োজনে কম বের হন এবং মাথা ঢেকে রাখুন। 🧢☀️",
-    "গরমে শরীরকে বিশ্রাম দিন, হালকা পোশাক পরুন এবং পর্যাপ্ত পানি পান করুন। 💧",
-    "আহা গরম! 😅 পানি কাছে রাখুন, রোদ এড়িয়ে চলুন এবং শরীর খারাপ লাগলে বিশ্রাম নিন।",
-]
-MORNING_REPLIES = [
-    "সুপ্রভাত! 🌅 আজকের দিনটা সুন্দর হোক। পানি পান করে দিন শুরু করুন।",
-    "ঘুম থেকে উঠেছেন? 🌞 একটু স্ট্রেচিং করে নতুন দিনের কাজ শুরু করুন।",
-    "সকালটা আপনার জন্য শুভ হোক। ☀️ আজকের গুরুত্বপূর্ণ কাজগুলো আগে গুছিয়ে নিন।",
-]
-WORK_REPLIES = [
-    "কাজের সময় মনোযোগ দিন, তবে মাঝে মাঝে ছোট বিরতি নিন। 💼🙂",
-    "কাজটা একবারে এক ধাপ করে করুন—চাপ কমবে, কাজও এগোবে। 💪",
-    "আজকের কাজের ছোট একটি তালিকা বানিয়ে শুরু করুন। ✅",
-]
-STUDY_REPLIES = [
-    "পড়ার সময় ফোনটা একটু দূরে রাখুন। 📚📵 ২৫–৩০ মিনিট মন দিয়ে পড়ে ছোট বিরতি নিন।",
-    "আজ একটু পড়ুন—অল্প অল্প করে নিয়মিত পড়াই সবচেয়ে কাজে দেয়। 📖💪",
-    "পড়াশোনার জন্য একটি ছোট লক্ষ্য ঠিক করুন এবং সেটা শেষ না হওয়া পর্যন্ত মনোযোগ রাখুন। 🎯📚",
-]
-SLEEP_REPLIES = [
-    "ঘুমের সময় হলে ফোনটা পাশে রেখে একটু বিশ্রাম নিন। 😴🌙",
-    "ভালো ঘুম শরীর ও মনের জন্য দরকার। আজ সময়মতো ঘুমানোর চেষ্টা করুন। 💤",
-    "রাত বেশি জাগবেন না—আগামীকাল যেন ফ্রেশভাবে শুরু করতে পারেন। 🌙🙂",
-]
-
-# Generate a large deterministic phrase bank without bloating the source with thousands of lines.
-# These combinations create well over 1000 possible responses while remaining easy to maintain.
-TIME_PREFIXES = ["ঠিক আছে!", "মনে রাখবেন:", "একটা ছোট মনে করিয়ে দিই—", "আজকের ছোট্ট পরামর্শ—", "বটের পক্ষ থেকে—"]
-CARE_SUFFIXES = [
-    "নিজের যত্ন নিন। ❤️", "সুস্থ থাকুন। 🤝", "পানি পান করতে ভুলবেন না। 💧",
-    "আরাম করে করুন, তাড়াহুড়া করবেন না। 🙂", "প্রয়োজনে কাছের মানুষের সাহায্য নিন। 🤝",
-]
-SMART_RESPONSE_BANK = []
-for base in RAIN_CAPTIONS + HEAT_REPLIES + MORNING_REPLIES + WORK_REPLIES + STUDY_REPLIES + SLEEP_REPLIES:
-    for prefix in TIME_PREFIXES:
-        for suffix in CARE_SUFFIXES:
-            SMART_RESPONSE_BANK.append(f"{prefix} {base} {suffix}")
-# 8+5+3+3+3+3 = 25 bases x 25 combinations = 625, plus OpenAI fallback.
-# Add additional variations to exceed 1000 deterministic responses.
-EXTRA_BASES = [
-    "আজ একটু নিজের জন্য সময় রাখুন। 🌿", "কাজের মাঝে পানি খেয়ে নিন। 💧", "দুশ্চিন্তা না করে কাজটাকে ছোট ছোট অংশে ভাগ করুন। 🎯",
-    "আজ ভালো কিছু করার জন্য ছোট একটি লক্ষ্য ঠিক করুন। ✨", "মন খারাপ হলে কিছুক্ষণ বিশ্রাম নিন এবং পছন্দের কারও সঙ্গে কথা বলুন। ❤️",
-    "অতিরিক্ত রোদে গেলে সাবধান থাকুন এবং পানি সঙ্গে রাখুন। ☀️💧", "বাইরে বের হলে আবহাওয়ার দিকে খেয়াল রাখুন। 🌦️",
-    "আজকের সময়টা নষ্ট না করে সবচেয়ে জরুরি কাজটি আগে করুন। ⏰", "স্ক্রিন থেকে মাঝে মাঝে চোখকে বিশ্রাম দিন। 👀",
-    "ভালোভাবে খাওয়া, পানি আর ঘুম—এই তিনটি ভুলবেন না। 🍚💧😴",
-    "মন ভালো রাখতে একটু হাঁটাহাঁটি করতে পারেন। 🚶", "বন্ধুদের সঙ্গে ভালো সময় কাটান, তবে নিজের কাজও শেষ করুন। 🙂",
-    "আজ নতুন কিছু শেখার জন্য ১০ মিনিট হলেও সময় দিন। 📚", "একটু হাসুন—দিনটা হয়তো আরও সুন্দর লাগবে। 😄",
-    "যদি ক্লান্ত লাগে, ছোট বিরতি নিন এবং আবার শুরু করুন। 🔄",
-]
-for base in EXTRA_BASES:
-    for prefix in TIME_PREFIXES:
-        for suffix in CARE_SUFFIXES:
-            SMART_RESPONSE_BANK.append(f"{prefix} {base} {suffix}")
-
-
-def smart_everyday_reply(text):
-    norm = normalize_text(text)
-    import random
-    rain = any(x in norm for x in ["বৃষ্টি", "বৃষ্টির", "বৃষ্টি হচ্ছে", "বৃষ্টি আসছে", "rain", "বৃষ্টিতে"])
-    heat = any(x in norm for x in ["গরম", "অনেক গরম", "গরম লাগ", "তাপমাত্রা বেশি", "heat", "hot"])
-    morning = any(x in norm for x in ["সুপ্রভাত", "শুভ সকাল", "ঘুম থেকে উঠেছি", "সকালে উঠেছি", "সকাল হয়েছে"])
-    study = any(x in norm for x in ["পড়তে বস", "পড়াশোনা", "স্টাডি", "study", "পড়ার সময়"])
-    work = any(x in norm for x in ["কাজ করতে", "কাজের সময়", "অফিস", "কাজে বস", "work"])
-    sleep = any(x in norm for x in ["ঘুম", "ঘুমাব", "ঘুমাতে", "ঘুমানোর সময়", "sleep"])
-    if rain:
-        return random.choice(RAIN_OPENERS + RAIN_CAPTIONS)
-    if heat:
-        return random.choice(HEAT_REPLIES)
-    if morning:
-        return random.choice(MORNING_REPLIES)
-    if study:
-        return random.choice(STUDY_REPLIES)
-    if work:
-        return random.choice(WORK_REPLIES)
-    if sleep:
-        return random.choice(SLEEP_REPLIES)
-    return None
-
-# ---------------------------------------------------------------------------
-# Main message processor
-# ---------------------------------------------------------------------------
-
-async def handle_all_messages(update, context):
+async def handle_message(update, context):
     message = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
+
     if not message or not user or not chat:
         return
-
-    logger.info(
-        "MESSAGE RECEIVED | chat_id=%s | chat_type=%s | user=%s | text=%r",
-        chat.id, chat.type, user.username or user.id, message.text,
-    )
 
     save_user(user)
     save_chat(chat)
 
-    if await handle_admin_media_upload(update, context):
+    # Admin media upload/title flow always has priority.
+    if await handle_admin_media(update, context):
         return
+
+    if message.text and await handle_admin_title(update, context):
+        return
+
     if not message.text:
         return
+
     text = message.text.strip()
     if not text:
         return
-    if await handle_admin_title_save(update, context):
-        return
 
     if not check_rate_limit(user.id):
-        await message.reply_text("⏳ একটু ধীরে মেসেজ করুন, আমি শুনছি। 🙂")
+        await message.reply_text("⏳ একটু ধীরে বলুন 🙂")
         return
 
-    norm = normalize_text(text)
+    normalized = normalize_text(text)
 
-    help_words = ["এডমিন চাই", "অ্যাডমিন চাই", "admin help", "এডমিনের সাথে", "সমস্যা হয়েছে", "অভিযোগ"]
-    if any(w in norm for w in help_words) or ("admin" in norm and ("help" in norm or "contact" in norm)):
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("💬 এডমিন @tomalchowdhury2-কে মেসেজ দিন",
-                                 url=f"https://t.me/{ADMIN_USERNAME}")
-        ]])
-        await message.reply_text(
-            f"👑 **এডমিনের সাথে যোগাযোগ:** @{ADMIN_USERNAME}",
-            reply_markup=keyboard, parse_mode="Markdown",
-        )
-        await notify_admin_user_help(context.bot, user, text)
+    # Fast deterministic commands/replies stay fast and do not waste an AI call.
+    fixed = fixed_reply(text)
+    if fixed:
+        save_message(chat.id, user.id, "user", text)
+        save_message(chat.id, 0, "assistant", fixed)
+        await message.reply_text(fixed)
         return
 
-    is_drama_query = any(k in norm for k in ["নাটক", "drama", "natok"])
-    is_song_query = any(k in norm for k in ["গান", "song", "গজল", "audio"])
-    is_video_query = any(k in norm for k in ["ভিডিও", "video", "মুভি", "movie"])
-    category_key = find_category_key(text)
-    category_request_words = ["দাও", "দেন", "চাই", "লাগবে", "পাঠাও", "পাঠান", "দেও", "দিবে", "দিবেন", "কোথায়"]
-    if category_key and any(w in norm for w in category_request_words):
-        label = CATEGORY_LABELS.get(category_key, category_key)
-        items = get_contents_by_category(category_key, 10)
-        if items:
-            buttons = [[InlineKeyboardButton(f"🎬 {x['title'][:55]}", callback_data=f"send_media_{x['id']}")] for x in items]
-            await message.reply_text(
-                f"📂 **{label}**\n\nআপনার জন্য পাওয়া কন্টেন্টগুলো সিলেক্ট করুন:",
-                reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
-            )
-        else:
-            username = user.username
-            who = f"@{username}" if username else f"ID {user.id}"
-            await message.reply_text(
-                "😔 **Sorry!** আপনার চাওয়া অনুযায়ী কন্টেন্ট এখনো এখানে আসে নাই।\n\n"
-                "📩 আমি আমার বসকে জানিয়ে দিলাম—আপনার চাওয়া কন্টেন্ট Category-তে যোগ করার অনুরোধ গেছে।\n"
-                f"👤 Username: {who}", parse_mode="Markdown"
-            )
-            await notify_admin_missing_content(context.bot, user, label, text)
-        return
+    # Pending content selection: user can simply type another title/name.
+    if pending_exists(chat.id, user.id):
+        pending = pending_content.get(chat.id, {})
+        category = pending.get("category")
+        row = search_content(text, category=category)
+        if row:
+            clear_pending(chat.id)
+            await send_saved_content(update, row, context)
+            return
 
-    is_content_intent = (
-        is_drama_query or is_song_query or is_video_query or
-        any(r in norm for r in ["চাই", "দাও", "দেন", "পাঠাও", "পাঠান", "লাগবে", "দেও"])
-    )
+    # Save the user message before AI so the router sees conversation context.
+    save_message(chat.id, user.id, "user", text)
 
-    if is_content_intent:
-        target_category = "drama" if is_drama_query else ("song" if is_song_query else None)
-        clean_query = norm
-        for rm in ["আমাকে", "একটি", "একটা", "নাটক", "গান", "ভিডিও", "দাও", "দেন", "চাই", "লাগবে", "নতুন", "প্লিজ", "please", "দেও"]:
-            clean_query = re.sub(r"\b" + re.escape(rm) + r"\b", " ", clean_query)
-        clean_query = re.sub(r"\s+", " ", clean_query).strip()
+    # -----------------------------------------------------
+    # AI-FIRST NATURAL LANGUAGE ROUTER
+    # -----------------------------------------------------
+    try:
+        intent = await ai_understand_message(chat.id, text)
+        action = intent.get("intent", "unknown")
+        category = intent.get("category")
+        query_text = intent.get("query", "").strip()
+        selected_id = intent.get("content_id")
 
-        if clean_query:
-            found = search_content(clean_query, target_category)
-            if found:
-                await deliver_media(update, found)
+        # Weather/prayer can be expressed naturally; no keyword requirement.
+        if action == "weather":
+            result = await get_weather()
+            reply = result or "❌ Weather data পাওয়া যাচ্ছে না।"
+            save_message(chat.id, 0, "assistant", reply)
+            await message.reply_text(reply)
+            return
+
+        if action == "prayer":
+            result = await get_prayer_times()
+            reply = result or "❌ নামাজের সময় পাওয়া যাচ্ছে না।"
+            save_message(chat.id, 0, "assistant", reply)
+            await message.reply_text(reply)
+            return
+
+        # Content requests are routed to the saved-media database.
+        if action == "content_request":
+            row = None
+
+            if selected_id:
+                row = db_execute(
+                    "SELECT * FROM contents WHERE id=?",
+                    (selected_id,),
+                    fetchone=True,
+                )
+                # Never send a model-selected item if its category conflicts
+                # strongly with the request.
+                if row and category and row["category"] != category:
+                    row = None
+
+            if not row:
+                row = search_content(query_text, category=category)
+
+            # If AI extracted no useful query, fall back to the original text.
+            if not row and text:
+                row = search_content(
+                    extract_content_query(text),
+                    category=category or detect_requested_category(text),
+                )
+
+            if row:
+                clear_pending(chat.id)
+                await send_saved_content(update, row, context)
                 return
 
-        if is_drama_query and (not clean_query or len(clean_query) < 2):
-            text2, markup2 = category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ")
-            await message.reply_text(text2, reply_markup=markup2, parse_mode="Markdown")
-            return
-
-        if is_song_query and (not clean_query or len(clean_query) < 2):
-            text2, markup2 = category_prompt(prefix="usercat", page=0, heading="🎵 গান বিভাগ")
-            await message.reply_text(text2, reply_markup=markup2, parse_mode="Markdown")
-            return
-
-        if is_drama_query or is_song_query or is_video_query:
-            recs = get_contents_by_category(target_category or "drama", 3)
-            buttons = [[InlineKeyboardButton(f"🎬 {r['title']}", callback_data=f"send_media_{r['id']}")] for r in recs]
-            buttons.append([InlineKeyboardButton("📩 এডমিনকে আপলোডের অনুরোধ", url=f"https://t.me/{ADMIN_USERNAME}")])
-            rec_text = ""
-            if recs:
-                rec_text = "\n\n💡 জনপ্রিয় কন্টেন্ট:\n" + "\n".join(f"• **{r['title']}**" for r in recs)
-            await message.reply_text(
-                f"😔 **কাঙ্ক্ষিত কন্টেন্ট পাওয়া যায়নি।**{rec_text}\n\nনামটি ঠিকভাবে লিখে আবার চেষ্টা করুন।",
-                reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown",
+            set_pending(
+                chat.id,
+                user.id,
+                category=category,
+                original_query=query_text or extract_content_query(text),
             )
-            await notify_admin_missing_content(context.bot, user, target_category or "Media", text)
+
+            await send_suggestions(
+                update,
+                category,
+                query_text or extract_content_query(text),
+            )
+
+            # Admin learns what users are asking for but the bot cannot find.
+            await notify_admin(
+                context,
+                "AI understood a content request, but saved content was not found",
+                update,
+            )
             return
 
-    smart_reply = smart_everyday_reply(text)
-    if smart_reply:
-        await message.reply_text(smart_reply)
+        # Admin/human support gets a direct clickable Admin button.
+        if action == "admin_help":
+            reply = intent.get("reply") or (
+                "অবশ্যই। আপনার সমস্যাটা লিখে দিন, আর দরকার হলে সরাসরি Admin-এর সাথে যোগাযোগ করতে পারেন।"
+            )
+            save_message(chat.id, 0, "assistant", reply)
+            await message.reply_text(
+                reply,
+                reply_markup=admin_keyboard(),
+            )
+            return
+
+        # AI clarification question.
+        if action == "clarify":
+            reply = intent.get("reply") or "আপনি ঠিক কোনটা চান—একটু পরিষ্কার করে বলবেন? 🙂"
+            save_message(chat.id, 0, "assistant", reply)
+            await message.reply_text(reply)
+            return
+
+        # Normal ChatGPT-like conversation.
+        reply = intent.get("reply", "").strip()
+        if not reply:
+            reply = await ai_reply(chat.id, text)
+
+        save_message(chat.id, 0, "assistant", reply)
+        await message.reply_text(reply)
         return
 
-    if any(w in norm for w in ["আবহাওয়া", "weather", "বৃষ্টি", "তাপমাত্রা"]):
-        await message.reply_text((await get_weather()) or "❌ আবহাওয়া তথ্য পাওয়া যায়নি।")
-        return
+    except Exception as e:
+        logger.exception("AI-FIRST HANDLER ERROR")
 
-    if any(w in norm for w in ["নামাজের সময়", "নামাজ কখন", "আজকের নামাজ", "prayer time"]):
-        await message.reply_text((await get_prayer_times()) or "❌ নামাজের সময় পাওয়া যায়নি।")
-        return
+        # If AI routing fails, preserve the old deterministic content/weather
+        # behavior instead of leaving the user without an answer.
+        try:
+            if is_content_request(text):
+                category = detect_requested_category(text)
+                query_text = infer_query_without_request_words(text)
+                row = search_content(query_text, category=category)
+                if row:
+                    await send_saved_content(update, row, context)
+                    return
+                await send_suggestions(update, category, query_text)
+                await notify_admin(context, "AI router failed during content request", update, e)
+                return
 
-    save_message(chat.id, user.id, "user", text)
-    await message.reply_chat_action("typing")
-    ai_reply = await generate_chatgpt_response(chat.id, text)
-    save_message(chat.id, 0, "assistant", ai_reply)
-    await message.reply_text(ai_reply)
+            if any(x in normalized for x in ["আবহাওয়া", "weather", "বৃষ্টি", "তাপমাত্রা", "temperature"]):
+                result = await get_weather()
+                await message.reply_text(result or "❌ Weather data পাওয়া যাচ্ছে না।")
+                await notify_admin(context, "AI router failed; weather fallback used", update, e)
+                return
 
-# ---------------------------------------------------------------------------
-# Error / startup
-# ---------------------------------------------------------------------------
+            if any(x in normalized for x in ["নামাজ", "ওয়াক্ত", "prayer time"]):
+                result = await get_prayer_times()
+                await message.reply_text(result or "❌ নামাজের সময় পাওয়া যাচ্ছে না।")
+                await notify_admin(context, "AI router failed; prayer fallback used", update, e)
+                return
 
-async def global_error_handler(update, context):
-    logger.error("Exception while handling update: %s", context.error)
-    tb = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
-    user = update.effective_user if isinstance(update, Update) else None
+            answer = await ai_reply(chat.id, text)
+            save_message(chat.id, 0, "assistant", answer)
+            await message.reply_text(answer)
+            await notify_admin(context, "AI intent router failed; chat fallback used", update, e)
+
+        except Exception as fallback_error:
+            logger.exception("AI FALLBACK ERROR")
+            await message.reply_text(
+                "😔 দুঃখিত, এখন উত্তর দিতে সমস্যা হচ্ছে।\n"
+                "চাইলে Admin-এর সাথে সরাসরি যোগাযোগ করতে পারেন।",
+                reply_markup=admin_keyboard(),
+            )
+            await notify_admin(context, "AI and fallback response both failed", update, fallback_error)
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(update, context):
+    logger.error(
+        "TELEGRAM ERROR: %r",
+        context.error,
+    )
+
     try:
-        await send_admin_alert(
-            context.bot,
-            "⚠️ **[ERROR ALERT]**\n"
-            f"User: {user.first_name if user else 'Unknown'}\n\n"
-            f"`{str(context.error)}`\n\n"
-            f"Traceback:\n`{tb[-400:]}`",
+        await notify_admin(
+            context,
+            "Unhandled Telegram bot error",
+            update,
+            context.error,
         )
     except Exception:
-        pass
+        logger.exception("Could not send error alert to admin")
 
+
+# =========================================================
+# HOURLY MESSAGES
+# =========================================================
+
+SPECIAL_MESSAGES = {
+    0: (
+        "🌙 শুভ রাত্রি সবাইকে! 😴\n"
+        "দিনের কাজ শেষ করে এখন একটু বিশ্রাম নিন।"
+    ),
+    7: (
+        "🌅 শুভ সকাল সবাইকে! ☀️\n"
+        "নতুন দিনের শুরু হোক সুন্দরভাবে। ❤️"
+    ),
+    8: (
+        "☀️ সকাল ৮টা!\n"
+        "আজকের দিনটা ভালো কিছু দিয়ে শুরু হোক। 😊"
+    ),
+    9: (
+        "🌞 সকাল ৯টা!\n"
+        "নিজের কাজগুলো সুন্দরভাবে এগিয়ে নিন। 💪"
+    ),
+    10: (
+        "☀️ সকাল ১০টা!\n"
+        "ব্যস্ত দিনের মাঝেও একটু পানি পান করতে ভুলবেন না। 💧"
+    ),
+    12: (
+        "🌤️ শুভ দুপুর!\n"
+        "দুপুরের খাবার খেয়ে একটু বিশ্রাম নিন। 😊"
+    ),
+    16: (
+        "🌇 বিকেল ৪টা!\n"
+        "দিনের কাজ কেমন চলছে সবাই? 🙂"
+    ),
+    18: (
+        "🌆 শুভ সন্ধ্যা সবাইকে! ❤️\n"
+        "দিনটা সুন্দরভাবে শেষ হোক।"
+    ),
+    19: (
+        "📚 Study Time!\n"
+        "যারা পড়াশোনা করছেন, মনোযোগ দিয়ে পড়ুন। 💪📖"
+    ),
+    22: (
+        "🌙 রাত ১০টা!\n"
+        "অনেক রাত হয়েছে—সময়মতো ঘুমানোর চেষ্টা করুন। 😴"
+    ),
+}
+
+GENERIC_HOURS = {
+    11: "🕐 এখন সময় ১১:০০ বাজে",
+    13: "🕐 এখন সময় ১:০০ বাজে",
+    14: "🕐 এখন সময় ২:০০ বাজে",
+    15: "🕐 এখন সময় ৩:০০ বাজে",
+    17: "🕐 এখন সময় ৫:০০ বাজে",
+    20: "🕐 এখন সময় ৮:০০ বাজে",
+    21: "🕐 এখন সময় ৯:০০ বাজে",
+    23: "🕐 এখন সময় ১১:০০ বাজে",
+}
+
+
+async def hourly_loop(application):
+    while True:
+        try:
+            now = datetime.now(TZ)
+            hour = now.hour
+            minute = now.minute
+
+            if minute <= 1:
+                key = now.strftime("%Y-%m-%d-%H")
+                last = get_state("last_auto_hour")
+
+                if last != key:
+                    text = (
+                        SPECIAL_MESSAGES.get(hour)
+                        or GENERIC_HOURS.get(hour)
+                    )
+
+                    if text:
+                        rows = db_execute(
+                            "SELECT chat_id FROM chats",
+                            fetch=True,
+                        )
+
+                        for row in rows:
+                            try:
+                                await application.bot.send_message(
+                                    chat_id=row["chat_id"],
+                                    text=text,
+                                )
+                                await asyncio.sleep(0.05)
+                            except Exception as e:
+                                logger.warning(
+                                    "AUTO ERROR: %r",
+                                    e,
+                                )
+
+                        set_state(
+                            "last_auto_hour",
+                            key,
+                        )
+
+        except Exception:
+            logger.exception("HOURLY ERROR")
+
+        await asyncio.sleep(20)
+
+
+# =========================================================
+# STARTUP
+# =========================================================
 
 async def post_init(application):
-    # run_polling uses getUpdates. Telegram does not allow getUpdates while an
-    # outgoing webhook is set, so clear any old webhook before polling.
-    try:
-        await application.bot.delete_webhook(drop_pending_updates=False)
-        me = await application.bot.get_me()
-        logger.info("BOT CONNECTED | username=@%s | id=%s", me.username, me.id)
-    except Exception as e:
-        logger.error("Bot startup check failed: %r", e)
+    init_db()
 
-    if AUTO_MESSAGES_ENABLED:
-        application.create_task(
-            automatic_notification_loop(application),
-            name="automatic_notification_loop",
+    application.create_task(
+        hourly_loop(application)
+    )
+
+    logger.info("================================")
+    logger.info("BOT STARTED SUCCESSFULLY")
+    logger.info("TIMEZONE: %s", TZ)
+    logger.info("MODEL: %s", OPENAI_MODEL)
+    logger.info("ADMIN_ID: %s", ADMIN_ID)
+    logger.info("ADMIN_USERNAME: @%s", ADMIN_USERNAME)
+    logger.info("ADSGRAM_BLOCK_ID: %s", ADSGRAM_BLOCK_ID or "not configured")
+    logger.info("ADSGRAM_WEBAPP_URL: %s", ADSGRAM_WEBAPP_URL or "not configured")
+    logger.info("================================")
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN সেট করা হয়নি। Environment variable-এ BOT_TOKEN দিন।"
         )
 
+    if not ADMIN_ID:
+        raise RuntimeError(
+            "ADMIN_ID সেট করা হয়নি। আপনার Telegram numeric user ID দিন।"
+        )
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def run_bot_once():
-    if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("❌ Error: BOT_TOKEN is missing! Set BOT_TOKEN in environment.")
-        return
-
+    if not OPENAI_API_KEY:
+        logger.warning(
+            "OPENAI_API_KEY নেই। AI chat fallback mode-এ চলবে।"
+        )
 
     app = (
         ApplicationBuilder()
@@ -1497,77 +2217,75 @@ def run_bot_once():
     )
 
     # Commands
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("contact", contact_command))
-    app.add_handler(CommandHandler("admin", admin_panel_command))
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("delete", delete_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("auto_on", auto_on_command))
-    app.add_handler(CommandHandler("auto_off", auto_off_command))
-    app.add_handler(CommandHandler("notify_test", notify_test_command))
-
-    app.add_handler(CallbackQueryHandler(handle_callback_query))
-
-    # Saves a group as soon as the bot is added/changed there.
     app.add_handler(
-        ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER)
+        CommandHandler("start", start_command)
+    )
+    app.add_handler(
+        CommandHandler("admin", admin_command)
+    )
+    app.add_handler(
+        CommandHandler("admintest", admintest_command)
+    )
+    app.add_handler(
+        CommandHandler("addsong", addsong_command)
+    )
+    app.add_handler(
+        CommandHandler("addcontent", addsong_command)
+    )
+    app.add_handler(
+        CommandHandler("list", list_command)
+    )
+    app.add_handler(
+        CommandHandler("stats", stats_command)
+    )
+    app.add_handler(
+        CommandHandler("delete", delete_command)
+    )
+    app.add_handler(
+        CommandHandler("broadcast", broadcast_command)
+    )
+    app.add_handler(
+        CommandHandler("weather", weather_command)
+    )
+    app.add_handler(
+        CommandHandler("prayer", prayer_command)
     )
 
-    # Media first; the text handler below processes normal messages.
-    app.add_handler(MessageHandler(
-        filters.VIDEO | filters.AUDIO | filters.PHOTO |
-        filters.Document.ALL | filters.ANIMATION,
-        handle_all_messages,
-    ))
+    # Fast Reply buttons
+    app.add_handler(
+        CallbackQueryHandler(callback_handler)
+    )
 
-    # Text messages, including normal group messages.
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_all_messages,
-    ))
+    # Text
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message,
+        )
+    )
 
-    app.add_error_handler(global_error_handler)
+    # Media
+    app.add_handler(
+        MessageHandler(
+            (
+                filters.VIDEO
+                | filters.AUDIO
+                | filters.PHOTO
+                | filters.Document.ALL
+                | filters.ANIMATION
+            ),
+            handle_message,
+        )
+    )
 
-    print("==================================================")
-    print("🤖 Telegram Bot Running with OpenAI Intelligence")
-    print(f"👑 Admin: @{ADMIN_USERNAME} (ID: {ADMIN_IDS[0]})")
-    print(f"🧠 AI Model: {OPENAI_MODEL}")
-    print(f"🔔 Auto notifications: {'ON' if AUTO_MESSAGES_ENABLED else 'OFF'}")
-    print(f"📚 Study hours: {STUDY_HOURS}")
-    print(f"⚽ Sports hours: {SPORTS_HOURS}")
-    print(f"🌅 Wake hour: {WAKE_HOUR}:00")
-    print(f"💼 Work hours: {WORK_HOURS}")
-    print(f"😴 Sleep hour: {SLEEP_HOUR}:00")
-    print("==================================================")
+    app.add_error_handler(error_handler)
 
-    # Long polling. Do not run another instance with the same BOT_TOKEN.
+    logger.info("Starting Telegram bot...")
+
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=False,
     )
-
-
-def main():
-    """Start the bot and automatically recover from temporary network failures."""
-    init_db()
-    retry_delay = 10
-
-    while True:
-        try:
-            run_bot_once()
-            # run_bot_once normally blocks inside run_polling(). If it returns
-            # cleanly, wait briefly before starting again.
-            logger.warning("Bot polling stopped. Restarting in %s seconds...", retry_delay)
-            time.sleep(retry_delay)
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user.")
-            break
-        except Exception as e:
-            logger.error("Bot crashed / network connection failed: %r", e)
-            logger.error("Restarting automatically in %s seconds...", retry_delay)
-            time.sleep(retry_delay)
 
 
 if __name__ == "__main__":
