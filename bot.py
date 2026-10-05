@@ -1091,7 +1091,7 @@ async def handle_callback_query(update, context):
         new_id = db_execute("""
             INSERT INTO contents(title,media_type,file_id,category,views,added_by,created_at)
             VALUES (?,?,?,?,0,?,?)
-        """, (title, pending["media_type"], pending["file_id"], key, 0, query.from_user.id, now_str()))
+        """, (title, pending["media_type"], pending["file_id"], key, query.from_user.id, now_str()))
         context.user_data.pop("pending_media", None)
         context.user_data.pop("pending_title", None)
         context.user_data["waiting_category"] = False
@@ -1483,12 +1483,11 @@ async def post_init(application):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def run_bot_once():
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("❌ Error: BOT_TOKEN is missing! Set BOT_TOKEN in environment.")
         return
 
-    init_db()
 
     app = (
         ApplicationBuilder()
@@ -1548,6 +1547,27 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=False,
     )
+
+
+def main():
+    """Start the bot and automatically recover from temporary network failures."""
+    init_db()
+    retry_delay = 10
+
+    while True:
+        try:
+            run_bot_once()
+            # run_bot_once normally blocks inside run_polling(). If it returns
+            # cleanly, wait briefly before starting again.
+            logger.warning("Bot polling stopped. Restarting in %s seconds...", retry_delay)
+            time.sleep(retry_delay)
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user.")
+            break
+        except Exception as e:
+            logger.error("Bot crashed / network connection failed: %r", e)
+            logger.error("Restarting automatically in %s seconds...", retry_delay)
+            time.sleep(retry_delay)
 
 
 if __name__ == "__main__":
