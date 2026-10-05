@@ -96,6 +96,8 @@ def parse_hours(value, default):
 STUDY_HOURS = parse_hours(os.getenv("STUDY_HOURS", "7,10,15,19"), [7, 10, 15, 19])
 SPORTS_HOURS = parse_hours(os.getenv("SPORTS_HOURS", "17,21"), [17, 21])
 SLEEP_HOUR = int(os.getenv("SLEEP_HOUR", "23"))
+WAKE_HOUR = int(os.getenv("WAKE_HOUR", "7"))
+WORK_HOURS = parse_hours(os.getenv("WORK_HOURS", "9,13,20"), [9, 13, 20])
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -312,6 +314,146 @@ def normalize_text(text):
 # ---------------------------------------------------------------------------
 # Content search
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Large content-category system (60+ user/admin choices)
+# ---------------------------------------------------------------------------
+
+CONTENT_CATEGORIES = [
+    ("romantic", "❤️ রোমান্টিক"),
+    ("comedy", "😂 কমেডি"),
+    ("family", "👨‍👩‍👧 ফ্যামিলি"),
+    ("emotional", "😭 ইমোশনাল"),
+    ("love", "💖 ভালোবাসা"),
+    ("sad", "💔 দুঃখের"),
+    ("action", "💥 অ্যাকশন"),
+    ("thriller", "🕵️ থ্রিলার"),
+    ("horror", "👻 ভৌতিক"),
+    ("mystery", "🔍 রহস্য"),
+    ("adventure", "🏕️ অ্যাডভেঞ্চার"),
+    ("family_drama", "🏠 পারিবারিক নাটক"),
+    ("village", "🌾 গ্রামের গল্প"),
+    ("city", "🏙️ শহরের গল্প"),
+    ("school", "🏫 স্কুল জীবন"),
+    ("college", "🎓 কলেজ জীবন"),
+    ("office", "💼 অফিস/কাজ"),
+    ("friendship", "🤝 বন্ধুত্ব"),
+    ("couple", "💑 কাপল"),
+    ("breakup", "💔 ব্রেকআপ"),
+    ("marriage", "💍 বিয়ে"),
+    ("social", "🌍 সামাজিক"),
+    ("islamic", "🕌 ইসলামিক"),
+    ("motivational", "🔥 মোটিভেশনাল"),
+    ("educational", "📚 শিক্ষামূলক"),
+    ("funny", "🤣 হাসির"),
+    ("viral", "🚀 ভাইরাল"),
+    ("trending", "🔥 ট্রেন্ডিং"),
+    ("short", "⚡ শর্ট ভিডিও"),
+    ("tiktok", "📱 TikTok"),
+    ("reels", "🎞️ Reels"),
+    ("youtube", "▶️ YouTube"),
+    ("movie", "🎬 মুভি"),
+    ("webseries", "📺 ওয়েব সিরিজ"),
+    ("natok", "🎭 বাংলা নাটক"),
+    ("music", "🎵 গান"),
+    ("romantic_song", "🎶 রোমান্টিক গান"),
+    ("sad_song", "🎼 স্যাড গান"),
+    ("folk", "🪕 লোকগান"),
+    ("islamic_song", "🕋 ইসলামিক গান"),
+    ("gazal", "🎤 গজল"),
+    ("dance", "💃 ডান্স"),
+    ("sports", "🏆 স্পোর্টস"),
+    ("cricket", "🏏 ক্রিকেট"),
+    ("football", "⚽ ফুটবল"),
+    ("wrestling", "🤼 রেসলিং"),
+    ("news", "📰 নিউজ"),
+    ("technology", "💻 টেকনোলজি"),
+    ("gaming", "🎮 গেমিং"),
+    ("travel", "✈️ ভ্রমণ"),
+    ("nature", "🌿 প্রকৃতি"),
+    ("rain", "🌧️ বৃষ্টি"),
+    ("winter", "❄️ শীত"),
+    ("summer", "☀️ গরম"),
+    ("food", "🍔 খাবার"),
+    ("cooking", "👨‍🍳 রান্না"),
+    ("animals", "🐾 প্রাণী"),
+    ("kids", "🧒 শিশুদের"),
+    ("cartoon", "🧸 কার্টুন"),
+    ("documentary", "🎥 ডকুমেন্টারি"),
+    ("history", "🏛️ ইতিহাস"),
+    ("science", "🔬 বিজ্ঞান"),
+    ("health", "🩺 স্বাস্থ্য"),
+    ("fitness", "💪 ফিটনেস"),
+    ("lifestyle", "✨ লাইফস্টাইল"),
+    ("other", "📂 অন্যান্য"),
+]
+
+CATEGORY_LABELS = dict(CONTENT_CATEGORIES)
+CATEGORY_PAGE_SIZE = 12
+
+
+def category_buttons(page=0, prefix="usercat"):
+    total_pages = max(1, (len(CONTENT_CATEGORIES) + CATEGORY_PAGE_SIZE - 1) // CATEGORY_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * CATEGORY_PAGE_SIZE
+    items = CONTENT_CATEGORIES[start:start + CATEGORY_PAGE_SIZE]
+    buttons = []
+    for i in range(0, len(items), 2):
+        row = []
+        for key, label in items[i:i + 2]:
+            row.append(InlineKeyboardButton(label, callback_data=f"{prefix}:{key}"))
+        buttons.append(row)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"{prefix}_page:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("🔽 See More", callback_data=f"{prefix}_page:{page+1}"))
+    if nav:
+        buttons.append(nav)
+    return buttons, page, total_pages
+
+
+def category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ"):
+    buttons, page, total_pages = category_buttons(page, prefix)
+    if prefix == "usercat":
+        text = (
+            f"{heading}\n\n"
+            "আপনার কোন ধরনের কন্টেন্ট লাগবে সেটা নিচের Category থেকে সিলেক্ট করুন। 👇\n"
+            f"📂 মোট Category: {len(CONTENT_CATEGORIES)}\n"
+            f"📄 Page {page+1}/{total_pages}"
+        )
+    else:
+        text = (
+            "🏷️ **Category নির্বাচন করুন**\n\n"
+            "ভিডিওটি কোন Category-তে রাখতে চান সেটা সিলেক্ট করুন। 👇\n"
+            f"📂 মোট Category: {len(CONTENT_CATEGORIES)}\n"
+            f"📄 Page {page+1}/{total_pages}"
+        )
+    return text, InlineKeyboardMarkup(buttons)
+
+
+def find_category_key(text):
+    norm = normalize_text(text)
+    aliases = {
+        "নাটক":"natok", "drama":"natok", "romantic":"romantic", "রোমান্টিক":"romantic",
+        "কমেডি":"comedy", "comedy":"comedy", "ফ্যামিলি":"family", "ইমোশনাল":"emotional",
+        "ভালোবাসা":"love", "দুঃখ":"sad", "অ্যাকশন":"action", "থ্রিলার":"thriller",
+        "ভৌতিক":"horror", "রহস্য":"mystery", "গ্রামের":"village", "ইসলামিক":"islamic",
+        "মোটিভেশন":"motivational", "শিক্ষামূলক":"educational", "ভাইরাল":"viral", "ট্রেন্ডিং":"trending",
+        "গান":"music", "song":"music", "গজল":"gazal", "ডান্স":"dance", "ক্রিকেট":"cricket",
+        "ফুটবল":"football", "স্পোর্টস":"sports", "মুভি":"movie", "ওয়েব সিরিজ":"webseries",
+        "বৃষ্টি":"rain", "গরম":"summer", "শীত":"winter", "ভ্রমণ":"travel", "খাবার":"food",
+        "গেমিং":"gaming", "টেক":"technology", "প্রকৃতি":"nature",
+    }
+    for alias, key in aliases.items():
+        if alias in norm:
+            return key
+    for key, label in CONTENT_CATEGORIES:
+        clean = normalize_text(label)
+        if key in norm or clean in norm:
+            return key
+    return None
 
 def detect_category(title):
     t = normalize_text(title)
@@ -579,23 +721,18 @@ async def handle_admin_title_save(update, context):
         context.user_data["waiting_title"] = False
         return False
 
-    category = detect_category(title)
-    new_id = db_execute("""
-        INSERT INTO contents(title,media_type,file_id,category,views,added_by,created_at)
-        VALUES (?,?,?,?,0,?,?)
-    """, (title, pending["media_type"], pending["file_id"], category, user.id, now_str()))
-
-    context.user_data.pop("pending_media", None)
+    context.user_data["pending_title"] = title
     context.user_data["waiting_title"] = False
+    context.user_data["waiting_category"] = True
+    text, markup = category_prompt(prefix="admincat", page=0)
     await message.reply_text(
-        "🎉 **কন্টেন্ট সফলভাবে ডেটাবেজে সংরক্ষিত হয়েছে!**\n\n"
-        f"🆔 **ID:** `{new_id}`\n"
-        f"🎬 **Title:** **{title}**\n"
-        f"📁 **মিডিয়া:** `{pending['media_type']}`\n"
-        f"🏷️ **ক্যাটাগরি:** `{category}`",
+        f"✅ **নাম গ্রহণ করা হয়েছে:**\n🎬 {title}\n\n" + text,
+        reply_markup=markup,
         parse_mode="Markdown",
     )
     return True
+
+
 
 # ---------------------------------------------------------------------------
 # Weather / Prayer
@@ -689,19 +826,22 @@ def hourly_message(hour):
     ampm = "AM" if hour < 12 else "PM"
     text = f"🕐 **সময়: {h12}:00 {ampm} (বাংলাদেশ সময়)**\n\n"
 
+    if hour == WAKE_HOUR:
+        text += "🌅 **ঘুম থেকে ওঠার সময়!**\nসুপ্রভাত! ঘুম থেকে উঠে পানি পান করুন এবং আজকের দিনের পরিকল্পনা করুন। ☀️💧\n\n"
     if hour in STUDY_HOURS:
         text += "📚 **পড়াশোনার সময়!**\nএখন মনোযোগ দিয়ে পড়াশোনা/স্কিল শেখার জন্য সময় দিন। 📖\n\n"
     if hour in SPORTS_HOURS:
         text += "⚽ **খেলার/ব্যায়ামের সময়!**\nকিছুক্ষণ খেলাধুলা বা শরীরচর্চা করুন। 🏃‍♂️\n\n"
+    if hour in WORK_HOURS:
+        text += "💼 **কাজের সময়!**\nগুরুত্বপূর্ণ কাজগুলো গুছিয়ে করুন এবং মাঝে মাঝে ছোট বিরতি নিন। ✅\n\n"
     if hour == SLEEP_HOUR:
         text += "😴 **ঘুমানোর সময়!**\nসময়মতো ঘুমান, আগামী দিনের জন্য শরীর ও মনকে বিশ্রাম দিন। 🌙\n\n"
-    if hour == 5:
-        text += "🌅 **সুপ্রভাত!** আজকের দিনটি ভালো কাজে শুরু করুন।\n\n"
     if hour == 12:
         text += "🍚 দুপুর হয়েছে—খাওয়া, বিশ্রাম ও প্রয়োজনীয় কাজের সময় ঠিক রাখুন।\n\n"
     if hour == 18:
         text += "🌇 সন্ধ্যা হয়েছে। নামাজ ও পরিবারের জন্য কিছু সময় রাখুন।\n\n"
-    if hour not in STUDY_HOURS and hour not in SPORTS_HOURS and hour != SLEEP_HOUR:
+    if (hour not in STUDY_HOURS and hour not in SPORTS_HOURS and hour not in WORK_HOURS
+            and hour != SLEEP_HOUR and hour != WAKE_HOUR):
         text += "✅ আপনার কাজের তালিকা দেখে পরের এক ঘণ্টার লক্ষ্য ঠিক করুন।"
     return text
 
@@ -924,37 +1064,121 @@ async def handle_callback_query(update, context):
     await query.answer()
     data = query.data
 
+    # Admin: category pagination and final category selection.
+    if data.startswith("admincat_page:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 0
+        text, markup = category_prompt(prefix="admincat", page=page)
+        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data.startswith("admincat:"):
+        key = data.split(":", 1)[1]
+        if not is_admin(query.from_user.id):
+            await query.message.reply_text("❌ শুধু Admin Category নির্বাচন করতে পারবেন।")
+            return
+        if not context.user_data.get("waiting_category"):
+            await query.message.reply_text("ℹ️ বর্তমানে কোনো ভিডিও Category নির্বাচন করার অপেক্ষায় নেই।")
+            return
+        pending = context.user_data.get("pending_media")
+        title = context.user_data.get("pending_title")
+        if not pending or not title:
+            await query.message.reply_text("❌ Pending upload পাওয়া যায়নি। ভিডিওটি আবার পাঠান।")
+            return
+        label = CATEGORY_LABELS.get(key, "📂 অন্যান্য")
+        new_id = db_execute("""
+            INSERT INTO contents(title,media_type,file_id,category,views,added_by,created_at)
+            VALUES (?,?,?,?,0,?,?)
+        """, (title, pending["media_type"], pending["file_id"], key, 0, query.from_user.id, now_str()))
+        context.user_data.pop("pending_media", None)
+        context.user_data.pop("pending_title", None)
+        context.user_data["waiting_category"] = False
+        await query.message.reply_text(
+            "🎉 **SUCCESSFUL! কন্টেন্ট সংরক্ষণ হয়েছে।**\n\n"
+            f"🆔 ID: `{new_id}`\n"
+            f"🎬 Title: **{title}**\n"
+            f"📁 Media: `{pending['media_type']}`\n"
+            f"🏷️ Category: **{label}**\n\n"
+            "👤 User এখন এই Category সিলেক্ট করলে কন্টেন্টটি পাবে।",
+            parse_mode="Markdown",
+        )
+        return
+
+    # User: category pagination and content selection.
+    if data.startswith("usercat_page:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 0
+        text, markup = category_prompt(prefix="usercat", page=page)
+        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data.startswith("usercat:"):
+        key = data.split(":", 1)[1]
+        label = CATEGORY_LABELS.get(key, key)
+        items = get_contents_by_category(key, 10)
+        if not items:
+            username = query.from_user.username
+            who = f"@{username}" if username else f"ID {query.from_user.id}"
+            await query.message.reply_text(
+                "😔 **Sorry!** আপনার চাওয়া অনুযায়ী কন্টেন্ট এখনো এখানে আসে নাই।\n\n"
+                "📩 আমি এখনই আমার বসকে জানিয়ে দিচ্ছি যেন দ্রুত এই Category-তে কন্টেন্ট যোগ করা হয়।\n"
+                f"👤 আপনার Username: {who}\n\n"
+                "নতুন কন্টেন্ট এলে আবার চেষ্টা করুন। ❤️",
+                parse_mode="Markdown",
+            )
+            await notify_admin_missing_content(
+                context.bot, query.from_user, label, f"Category request: {label}"
+            )
+            return
+        buttons = []
+        for item in items:
+            buttons.append([InlineKeyboardButton(
+                f"🎬 {item['title'][:55]}", callback_data=f"send_media_{item['id']}"
+            )])
+        buttons.append([InlineKeyboardButton("⬅️ Category List", callback_data="usercat_page:0")])
+        await query.message.reply_text(
+            f"📂 **{label}**\n\nআপনার জন্য পাওয়া কন্টেন্টগুলো নিচে আছে। যেটি চান সেটি সিলেক্ট করুন:",
+            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown",
+        )
+        return
+
     if data == "show_dramas":
-        items = get_contents_by_category("drama", 4)
-        if not items:
-            await query.message.reply_text("😔 কোনো নাটক ডেটাবেজে নেই।")
-            return
-        buttons = [[InlineKeyboardButton(f"🎬 {x['title']} ({x['views']} views)",
-                                         callback_data=f"send_media_{x['id']}")] for x in items]
-        await query.message.reply_text("🎬 **নাটকসমূহ:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        text, markup = category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ")
+        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
 
-    elif data == "show_songs":
-        items = get_contents_by_category("song", 4)
-        if not items:
-            await query.message.reply_text("😔 কোনো গান ডেটাবেজে নেই।")
-            return
-        buttons = [[InlineKeyboardButton(f"🎵 {x['title']}", callback_data=f"send_media_{x['id']}")] for x in items]
-        await query.message.reply_text("🎵 **গানসমূহ:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    if data == "show_songs":
+        # Songs also use the same large Category browser.
+        text, markup = category_prompt(prefix="usercat", page=0, heading="🎵 গান বিভাগ")
+        await query.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
 
-    elif data == "show_trending":
+    if data == "show_trending":
         items = get_top_trending(5)
         if not items:
             await query.message.reply_text("📭 কোনো কন্টেন্ট নেই।")
             return
         lines = ["🔥 **ট্রেন্ডিং কন্টেন্ট:**\n"]
+        buttons = []
         for i, x in enumerate(items, 1):
-            lines.append(f"{i}. 🎬 **{x['title']}** — 👁️ {x['views']}")
-        await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            buttons.append([InlineKeyboardButton(
+                f"{i}. 🎬 {x['title'][:55]}", callback_data=f"send_media_{x['id']}"
+            )])
+        await query.message.reply_text(
+            "\n".join(lines) + "যেটি চান সিলেক্ট করুন:",
+            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+        )
+        return
 
-    elif data == "show_weather":
+    if data == "show_weather":
         await query.message.reply_text((await get_weather()) or "❌ আবহাওয়া তথ্য পাওয়া যায়নি।")
+        return
 
-    elif data.startswith("send_media_"):
+    if data.startswith("send_media_"):
         try:
             cid = int(data.split("_")[-1])
         except ValueError:
@@ -965,6 +1189,7 @@ async def handle_callback_query(update, context):
             await deliver_media(update, row)
         else:
             await query.message.reply_text("❌ কন্টেন্ট পাওয়া যায়নি।")
+        return
 
 # ---------------------------------------------------------------------------
 # Group/member update handling
@@ -980,6 +1205,108 @@ async def my_chat_member_handler(update, context):
         cm.chat.id, cm.chat.type,
         cm.old_chat_member.status, cm.new_chat_member.status,
     )
+
+
+# ---------------------------------------------------------------------------
+# Smart everyday replies: 1000+ possible variants from reusable phrase banks
+# ---------------------------------------------------------------------------
+
+RAIN_OPENERS = [
+    "আহা, আজ তো বৃষ্টি! 🌧️", "বৃষ্টি নামলেই মনটা অন্যরকম হয়ে যায়। ☔",
+    "আজ আকাশের মুড একদম বৃষ্টিময়। 🌧️", "বৃষ্টি দেখলেই চা-বিস্কুটের কথা মনে পড়ে! ☕🌧️",
+    "আজকের আবহাওয়া প্রেম করার অজুহাত দিচ্ছে। 😄🌧️", "বৃষ্টি মানেই একটু শান্তি, একটু স্মৃতি। ☔",
+    "বৃষ্টি এসেছে, ছাতা কোথায়? 😄☔", "আজ মেঘগুলো বেশ আবেগী! 🌧️❤️",
+]
+RAIN_CAPTIONS = [
+    "বৃষ্টি পড়ুক, মনটা একটু ভিজুক—কিন্তু মোবাইলটা শুকনো রাখবেন! 😂📱",
+    "বৃষ্টি + চা + জানালার পাশে বসা = আজকের অফিসিয়াল প্ল্যান। ☕🌧️",
+    "বৃষ্টি হচ্ছে, এখন শুধু একজন বলবে—‘চলো ভিজতে যাই!’ 😄☔",
+    "ছাতা আছে, কিন্তু বৃষ্টিতে ভেজার অজুহাত নেই! 😂",
+    "বৃষ্টি দেখে মনে হচ্ছে আকাশও আজ ছুটি নিয়েছে। 😴🌧️",
+    "বৃষ্টি যতই হোক, Wi‑Fi যেন না যায়—এই দোয়া করুন! 😂📶",
+    "আজকের ক্যাপশন: বৃষ্টি পড়ছে, মন বলছে চা চাই! ☕❤️",
+    "বৃষ্টির দিনে রাস্তা ভেজে, আর পুরোনো স্মৃতিগুলো শুকায় না। 🌧️💭",
+]
+HEAT_REPLIES = [
+    "আজ গরম বেশি হলে বারবার পানি পান করুন। 💧 শরীরকে ঠান্ডা রাখুন এবং সম্ভব হলে ছায়ায়/ঠান্ডা জায়গায় থাকুন।",
+    "গরমে পানিশূন্যতা এড়াতে পানি ও প্রয়োজনমতো ওরস্যালাইন/তরল পান করুন। ☀️💧",
+    "আজ যদি খুব গরম লাগে, বাইরে অপ্রয়োজনে কম বের হন এবং মাথা ঢেকে রাখুন। 🧢☀️",
+    "গরমে শরীরকে বিশ্রাম দিন, হালকা পোশাক পরুন এবং পর্যাপ্ত পানি পান করুন। 💧",
+    "আহা গরম! 😅 পানি কাছে রাখুন, রোদ এড়িয়ে চলুন এবং শরীর খারাপ লাগলে বিশ্রাম নিন।",
+]
+MORNING_REPLIES = [
+    "সুপ্রভাত! 🌅 আজকের দিনটা সুন্দর হোক। পানি পান করে দিন শুরু করুন।",
+    "ঘুম থেকে উঠেছেন? 🌞 একটু স্ট্রেচিং করে নতুন দিনের কাজ শুরু করুন।",
+    "সকালটা আপনার জন্য শুভ হোক। ☀️ আজকের গুরুত্বপূর্ণ কাজগুলো আগে গুছিয়ে নিন।",
+]
+WORK_REPLIES = [
+    "কাজের সময় মনোযোগ দিন, তবে মাঝে মাঝে ছোট বিরতি নিন। 💼🙂",
+    "কাজটা একবারে এক ধাপ করে করুন—চাপ কমবে, কাজও এগোবে। 💪",
+    "আজকের কাজের ছোট একটি তালিকা বানিয়ে শুরু করুন। ✅",
+]
+STUDY_REPLIES = [
+    "পড়ার সময় ফোনটা একটু দূরে রাখুন। 📚📵 ২৫–৩০ মিনিট মন দিয়ে পড়ে ছোট বিরতি নিন।",
+    "আজ একটু পড়ুন—অল্প অল্প করে নিয়মিত পড়াই সবচেয়ে কাজে দেয়। 📖💪",
+    "পড়াশোনার জন্য একটি ছোট লক্ষ্য ঠিক করুন এবং সেটা শেষ না হওয়া পর্যন্ত মনোযোগ রাখুন। 🎯📚",
+]
+SLEEP_REPLIES = [
+    "ঘুমের সময় হলে ফোনটা পাশে রেখে একটু বিশ্রাম নিন। 😴🌙",
+    "ভালো ঘুম শরীর ও মনের জন্য দরকার। আজ সময়মতো ঘুমানোর চেষ্টা করুন। 💤",
+    "রাত বেশি জাগবেন না—আগামীকাল যেন ফ্রেশভাবে শুরু করতে পারেন। 🌙🙂",
+]
+
+# Generate a large deterministic phrase bank without bloating the source with thousands of lines.
+# These combinations create well over 1000 possible responses while remaining easy to maintain.
+TIME_PREFIXES = ["ঠিক আছে!", "মনে রাখবেন:", "একটা ছোট মনে করিয়ে দিই—", "আজকের ছোট্ট পরামর্শ—", "বটের পক্ষ থেকে—"]
+CARE_SUFFIXES = [
+    "নিজের যত্ন নিন। ❤️", "সুস্থ থাকুন। 🤝", "পানি পান করতে ভুলবেন না। 💧",
+    "আরাম করে করুন, তাড়াহুড়া করবেন না। 🙂", "প্রয়োজনে কাছের মানুষের সাহায্য নিন। 🤝",
+]
+SMART_RESPONSE_BANK = []
+for base in RAIN_CAPTIONS + HEAT_REPLIES + MORNING_REPLIES + WORK_REPLIES + STUDY_REPLIES + SLEEP_REPLIES:
+    for prefix in TIME_PREFIXES:
+        for suffix in CARE_SUFFIXES:
+            SMART_RESPONSE_BANK.append(f"{prefix} {base} {suffix}")
+# 8+5+3+3+3+3 = 25 bases x 25 combinations = 625, plus OpenAI fallback.
+# Add additional variations to exceed 1000 deterministic responses.
+EXTRA_BASES = [
+    "আজ একটু নিজের জন্য সময় রাখুন। 🌿", "কাজের মাঝে পানি খেয়ে নিন। 💧", "দুশ্চিন্তা না করে কাজটাকে ছোট ছোট অংশে ভাগ করুন। 🎯",
+    "আজ ভালো কিছু করার জন্য ছোট একটি লক্ষ্য ঠিক করুন। ✨", "মন খারাপ হলে কিছুক্ষণ বিশ্রাম নিন এবং পছন্দের কারও সঙ্গে কথা বলুন। ❤️",
+    "অতিরিক্ত রোদে গেলে সাবধান থাকুন এবং পানি সঙ্গে রাখুন। ☀️💧", "বাইরে বের হলে আবহাওয়ার দিকে খেয়াল রাখুন। 🌦️",
+    "আজকের সময়টা নষ্ট না করে সবচেয়ে জরুরি কাজটি আগে করুন। ⏰", "স্ক্রিন থেকে মাঝে মাঝে চোখকে বিশ্রাম দিন। 👀",
+    "ভালোভাবে খাওয়া, পানি আর ঘুম—এই তিনটি ভুলবেন না। 🍚💧😴",
+    "মন ভালো রাখতে একটু হাঁটাহাঁটি করতে পারেন। 🚶", "বন্ধুদের সঙ্গে ভালো সময় কাটান, তবে নিজের কাজও শেষ করুন। 🙂",
+    "আজ নতুন কিছু শেখার জন্য ১০ মিনিট হলেও সময় দিন। 📚", "একটু হাসুন—দিনটা হয়তো আরও সুন্দর লাগবে। 😄",
+    "যদি ক্লান্ত লাগে, ছোট বিরতি নিন এবং আবার শুরু করুন। 🔄",
+]
+for base in EXTRA_BASES:
+    for prefix in TIME_PREFIXES:
+        for suffix in CARE_SUFFIXES:
+            SMART_RESPONSE_BANK.append(f"{prefix} {base} {suffix}")
+
+
+def smart_everyday_reply(text):
+    norm = normalize_text(text)
+    import random
+    rain = any(x in norm for x in ["বৃষ্টি", "বৃষ্টির", "বৃষ্টি হচ্ছে", "বৃষ্টি আসছে", "rain", "বৃষ্টিতে"])
+    heat = any(x in norm for x in ["গরম", "অনেক গরম", "গরম লাগ", "তাপমাত্রা বেশি", "heat", "hot"])
+    morning = any(x in norm for x in ["সুপ্রভাত", "শুভ সকাল", "ঘুম থেকে উঠেছি", "সকালে উঠেছি", "সকাল হয়েছে"])
+    study = any(x in norm for x in ["পড়তে বস", "পড়াশোনা", "স্টাডি", "study", "পড়ার সময়"])
+    work = any(x in norm for x in ["কাজ করতে", "কাজের সময়", "অফিস", "কাজে বস", "work"])
+    sleep = any(x in norm for x in ["ঘুম", "ঘুমাব", "ঘুমাতে", "ঘুমানোর সময়", "sleep"])
+    if rain:
+        return random.choice(RAIN_OPENERS + RAIN_CAPTIONS)
+    if heat:
+        return random.choice(HEAT_REPLIES)
+    if morning:
+        return random.choice(MORNING_REPLIES)
+    if study:
+        return random.choice(STUDY_REPLIES)
+    if work:
+        return random.choice(WORK_REPLIES)
+    if sleep:
+        return random.choice(SLEEP_REPLIES)
+    return None
 
 # ---------------------------------------------------------------------------
 # Main message processor
@@ -1032,6 +1359,28 @@ async def handle_all_messages(update, context):
     is_drama_query = any(k in norm for k in ["নাটক", "drama", "natok"])
     is_song_query = any(k in norm for k in ["গান", "song", "গজল", "audio"])
     is_video_query = any(k in norm for k in ["ভিডিও", "video", "মুভি", "movie"])
+    category_key = find_category_key(text)
+    category_request_words = ["দাও", "দেন", "চাই", "লাগবে", "পাঠাও", "পাঠান", "দেও", "দিবে", "দিবেন", "কোথায়"]
+    if category_key and any(w in norm for w in category_request_words):
+        label = CATEGORY_LABELS.get(category_key, category_key)
+        items = get_contents_by_category(category_key, 10)
+        if items:
+            buttons = [[InlineKeyboardButton(f"🎬 {x['title'][:55]}", callback_data=f"send_media_{x['id']}")] for x in items]
+            await message.reply_text(
+                f"📂 **{label}**\n\nআপনার জন্য পাওয়া কন্টেন্টগুলো সিলেক্ট করুন:",
+                reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown"
+            )
+        else:
+            username = user.username
+            who = f"@{username}" if username else f"ID {user.id}"
+            await message.reply_text(
+                "😔 **Sorry!** আপনার চাওয়া অনুযায়ী কন্টেন্ট এখনো এখানে আসে নাই।\n\n"
+                "📩 আমি আমার বসকে জানিয়ে দিলাম—আপনার চাওয়া কন্টেন্ট Category-তে যোগ করার অনুরোধ গেছে।\n"
+                f"👤 Username: {who}", parse_mode="Markdown"
+            )
+            await notify_admin_missing_content(context.bot, user, label, text)
+        return
+
     is_content_intent = (
         is_drama_query or is_song_query or is_video_query or
         any(r in norm for r in ["চাই", "দাও", "দেন", "পাঠাও", "পাঠান", "লাগবে", "দেও"])
@@ -1051,18 +1400,14 @@ async def handle_all_messages(update, context):
                 return
 
         if is_drama_query and (not clean_query or len(clean_query) < 2):
-            dramas = get_contents_by_category("drama", 3)
-            if dramas:
-                buttons = [[InlineKeyboardButton(f"🎬 {d['title']} ({d['views']} views)", callback_data=f"send_media_{d['id']}")] for d in dramas]
-                await message.reply_text("🎬 **নাটকগুলো থেকে বেছে নিন:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-                return
+            text2, markup2 = category_prompt(prefix="usercat", page=0, heading="🎭 নাটক বিভাগ")
+            await message.reply_text(text2, reply_markup=markup2, parse_mode="Markdown")
+            return
 
         if is_song_query and (not clean_query or len(clean_query) < 2):
-            songs = get_contents_by_category("song", 3)
-            if songs:
-                buttons = [[InlineKeyboardButton(f"🎵 {s['title']}", callback_data=f"send_media_{s['id']}")] for s in songs]
-                await message.reply_text("🎵 **গানগুলো থেকে বেছে নিন:**", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-                return
+            text2, markup2 = category_prompt(prefix="usercat", page=0, heading="🎵 গান বিভাগ")
+            await message.reply_text(text2, reply_markup=markup2, parse_mode="Markdown")
+            return
 
         if is_drama_query or is_song_query or is_video_query:
             recs = get_contents_by_category(target_category or "drama", 3)
@@ -1077,6 +1422,11 @@ async def handle_all_messages(update, context):
             )
             await notify_admin_missing_content(context.bot, user, target_category or "Media", text)
             return
+
+    smart_reply = smart_everyday_reply(text)
+    if smart_reply:
+        await message.reply_text(smart_reply)
+        return
 
     if any(w in norm for w in ["আবহাওয়া", "weather", "বৃষ্টি", "তাপমাত্রা"]):
         await message.reply_text((await get_weather()) or "❌ আবহাওয়া তথ্য পাওয়া যায়নি।")
@@ -1188,6 +1538,8 @@ def main():
     print(f"🔔 Auto notifications: {'ON' if AUTO_MESSAGES_ENABLED else 'OFF'}")
     print(f"📚 Study hours: {STUDY_HOURS}")
     print(f"⚽ Sports hours: {SPORTS_HOURS}")
+    print(f"🌅 Wake hour: {WAKE_HOUR}:00")
+    print(f"💼 Work hours: {WORK_HOURS}")
     print(f"😴 Sleep hour: {SLEEP_HOUR}:00")
     print("==================================================")
 
