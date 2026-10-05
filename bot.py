@@ -5,13 +5,15 @@
 Telegram AI Assistant & Media Bot - OpenAI + AdsGram
 Admin: @tomalchowdhury2 (ID: 8721334265)
 
+FULL VERSION
+
 Kept features:
 - OpenAI AI replies
 - Admin media upload -> title -> category -> SQLite save
 - Drama/song/video/category search and delivery
 - Admin alerts
 - Weather and prayer times
-- Admin commands: /start /help /contact /admin /list /delete /stats
+- Admin commands
 - Group-message handling/logging
 - Removes old Telegram webhook before polling
 - Saves groups when bot is added
@@ -23,13 +25,24 @@ Kept features:
 Added:
 - AdsGram Bot API ad before media delivery
 - Dynamic category system
+- Large category system
 - Admin add/edit/delete category
 - Natural category intent detection
-- Fast replies for known intents
-- Better Bengali/Banglish category understanding
-- Category aliases
-- Category browsing
-- Database migration for old installations
+- Fast local replies before OpenAI
+- Bengali/Banglish understanding
+- Creator/Boss identity replies
+- Bot home/location reply
+- Rain / heat / winter smart replies
+- Food / cooking / bathing / sleeping replies
+- Funny replies
+- Apology replies
+- Anti-fighting replies
+- Matching emojis
+- Many smart reply patterns/templates
+- Prayer-specific fun captions
+- Content request waiting message
+- Better media request handling
+- Better automatic daily reminders
 
 Required Render Environment Variables:
 
@@ -39,7 +52,7 @@ OPENAI_MODEL                  optional
 
 ADSGRAM_BLOCK_ID              bot-52042
 ADSGRAM_TOKEN                 REQUIRED for AdsGram Bot API
-ADSGRAM_WEBAPP_URL            kept for compatibility; not used for Bot API
+ADSGRAM_WEBAPP_URL            compatibility
 
 Optional:
 TIMEZONE=Asia/Dhaka
@@ -88,7 +101,7 @@ from telegram.ext import (
 )
 
 # ============================================================================
-# Configuration
+# CONFIGURATION
 # ============================================================================
 
 load_dotenv()
@@ -101,44 +114,75 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna").strip()
 ADMIN_IDS = [8721334265]
 ADMIN_USERNAME = "tomalchowdhury2"
 
-TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Dhaka")
+# Boss identity
+BOSS_NAME = "TOMAL CHOWDHURY"
+BOSS_USERNAME = "@tomalchowdhury2"
+
+TIMEZONE_NAME = os.getenv(
+    "TIMEZONE",
+    "Asia/Dhaka"
+)
 
 try:
     TZ = pytz.timezone(TIMEZONE_NAME)
 except Exception:
     TZ = pytz.timezone("Asia/Dhaka")
 
-PRAYER_CITY = os.getenv("PRAYER_CITY", "Dhaka")
-PRAYER_COUNTRY = os.getenv("PRAYER_COUNTRY", "Bangladesh")
-PRAYER_METHOD = os.getenv("PRAYER_METHOD", "1")
+PRAYER_CITY = os.getenv(
+    "PRAYER_CITY",
+    "Dhaka"
+)
 
-DB_FILE = os.getenv("DB_FILE", "bot_database.db")
+PRAYER_COUNTRY = os.getenv(
+    "PRAYER_COUNTRY",
+    "Bangladesh"
+)
+
+PRAYER_METHOD = os.getenv(
+    "PRAYER_METHOD",
+    "1"
+)
+
+DB_FILE = os.getenv(
+    "DB_FILE",
+    "bot_database.db"
+)
 
 # ============================================================================
-# AdsGram
+# ADSGRAM
 # ============================================================================
 
-ADSGRAM_BLOCK_ID = os.getenv("ADSGRAM_BLOCK_ID", "").strip()
-ADSGRAM_TOKEN = os.getenv("ADSGRAM_TOKEN", "").strip()
+ADSGRAM_BLOCK_ID = os.getenv(
+    "ADSGRAM_BLOCK_ID",
+    ""
+).strip()
 
-# Kept because user already added it.
-# AdsGram Bot API does NOT use this URL.
+ADSGRAM_TOKEN = os.getenv(
+    "ADSGRAM_TOKEN",
+    ""
+).strip()
+
 ADSGRAM_WEBAPP_URL = os.getenv(
     "ADSGRAM_WEBAPP_URL",
     "https://sad.adsgram.ai/js/sad.js"
 ).strip()
 
-ADSGRAM_ENABLED = bool(ADSGRAM_BLOCK_ID and ADSGRAM_TOKEN)
+ADSGRAM_ENABLED = bool(
+    ADSGRAM_BLOCK_ID and ADSGRAM_TOKEN
+)
 
-# AdsGram block may be supplied as bot-52042.
-# Bot API requires numeric part only.
+
 def adsgram_numeric_block_id():
+
     value = ADSGRAM_BLOCK_ID.strip()
 
     if value.lower().startswith("bot-"):
         value = value[4:]
 
-    match = re.search(r"\d+", value)
+    match = re.search(
+        r"\d+",
+        value
+    )
 
     if match:
         return match.group(0)
@@ -146,24 +190,43 @@ def adsgram_numeric_block_id():
     return value
 
 
-ADSGRAM_NUMERIC_BLOCK_ID = adsgram_numeric_block_id()
+ADSGRAM_NUMERIC_BLOCK_ID = (
+    adsgram_numeric_block_id()
+)
 
 # ============================================================================
-# Automatic notifications
+# AUTOMATIC NOTIFICATIONS
 # ============================================================================
 
 AUTO_MESSAGES_ENABLED = os.getenv(
     "AUTO_MESSAGES_ENABLED",
     "true"
-).lower() in {"1", "true", "yes", "on"}
+).lower() in {
+    "1",
+    "true",
+    "yes",
+    "on"
+}
 
 
-def parse_hours(value, default):
+def parse_hours(
+    value,
+    default
+):
+
     result = []
 
-    for item in value.split(",") if value else []:
+    for item in (
+        value.split(",")
+        if value
+        else []
+    ):
+
         try:
-            h = int(item.strip())
+
+            h = int(
+                item.strip()
+            )
 
             if 0 <= h <= 23:
                 result.append(h)
@@ -171,53 +234,83 @@ def parse_hours(value, default):
         except ValueError:
             pass
 
-    return sorted(set(result)) or default
+    return sorted(
+        set(result)
+    ) or default
 
 
 STUDY_HOURS = parse_hours(
-    os.getenv("STUDY_HOURS", "7,10,15,19"),
+    os.getenv(
+        "STUDY_HOURS",
+        "7,10,15,19"
+    ),
     [7, 10, 15, 19]
 )
 
 SPORTS_HOURS = parse_hours(
-    os.getenv("SPORTS_HOURS", "17,21"),
+    os.getenv(
+        "SPORTS_HOURS",
+        "17,21"
+    ),
     [17, 21]
 )
 
 WORK_HOURS = parse_hours(
-    os.getenv("WORK_HOURS", "9,13,20"),
+    os.getenv(
+        "WORK_HOURS",
+        "9,13,20"
+    ),
     [9, 13, 20]
 )
 
 try:
-    SLEEP_HOUR = int(os.getenv("SLEEP_HOUR", "23"))
+    SLEEP_HOUR = int(
+        os.getenv(
+            "SLEEP_HOUR",
+            "23"
+        )
+    )
 except Exception:
     SLEEP_HOUR = 23
 
 try:
-    WAKE_HOUR = int(os.getenv("WAKE_HOUR", "7"))
+    WAKE_HOUR = int(
+        os.getenv(
+            "WAKE_HOUR",
+            "7"
+        )
+    )
 except Exception:
     WAKE_HOUR = 7
 
 # ============================================================================
-# Logging
+# LOGGING
 # ============================================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     level=logging.INFO,
 )
 
-logger = logging.getLogger("telegram_bot")
+logger = logging.getLogger(
+    "telegram_bot"
+)
 
 # ============================================================================
-# OpenAI
+# OPENAI
 # ============================================================================
 
 openai_client = None
 
 if OPENAI_API_KEY:
+
     try:
+
         from openai import AsyncOpenAI
 
         openai_client = AsyncOpenAI(
@@ -225,26 +318,29 @@ if OPENAI_API_KEY:
         )
 
         logger.info(
-            "OpenAI client configured successfully. Key=SET"
+            "OpenAI client configured successfully."
         )
 
     except Exception as e:
+
         logger.warning(
             "Could not initialize OpenAI client: %s",
             e
         )
 
 else:
+
     logger.warning(
         "OPENAI_API_KEY is missing."
     )
 
 # ============================================================================
-# Database
+# DATABASE
 # ============================================================================
 
 
 def get_db():
+
     conn = sqlite3.connect(
         DB_FILE,
         check_same_thread=False
@@ -262,21 +358,31 @@ def db_execute(
     fetch=False,
     commit=True
 ):
+
     with get_db() as conn:
 
         cur = conn.cursor()
 
-        cur.execute(query, params)
+        cur.execute(
+            query,
+            params
+        )
 
         if commit:
             conn.commit()
 
         if fetchone:
+
             row = cur.fetchone()
 
-            return dict(row) if row else None
+            return (
+                dict(row)
+                if row
+                else None
+            )
 
         if fetch:
+
             return [
                 dict(r)
                 for r in cur.fetchall()
@@ -285,15 +391,20 @@ def db_execute(
         return cur.lastrowid
 
 
+def now_str():
+
+    return datetime.now(
+        TZ
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
 def init_db():
 
     with get_db() as conn:
 
         cur = conn.cursor()
-
-        # ------------------------------------------------------------
-        # Users
-        # ------------------------------------------------------------
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -305,10 +416,6 @@ def init_db():
         )
         """)
 
-        # ------------------------------------------------------------
-        # Chats
-        # ------------------------------------------------------------
-
         cur.execute("""
         CREATE TABLE IF NOT EXISTS chats (
             chat_id INTEGER PRIMARY KEY,
@@ -319,10 +426,6 @@ def init_db():
             notification_enabled INTEGER DEFAULT 1
         )
         """)
-
-        # ------------------------------------------------------------
-        # Contents
-        # ------------------------------------------------------------
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS contents (
@@ -337,10 +440,6 @@ def init_db():
         )
         """)
 
-        # ------------------------------------------------------------
-        # Messages
-        # ------------------------------------------------------------
-
         cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,20 +451,12 @@ def init_db():
         )
         """)
 
-        # ------------------------------------------------------------
-        # Bot state
-        # ------------------------------------------------------------
-
         cur.execute("""
         CREATE TABLE IF NOT EXISTS bot_state (
             key TEXT PRIMARY KEY,
             value TEXT
         )
         """)
-
-        # ------------------------------------------------------------
-        # Dynamic categories
-        # ------------------------------------------------------------
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -378,10 +469,6 @@ def init_db():
         )
         """)
 
-        # ------------------------------------------------------------
-        # Backward compatibility
-        # ------------------------------------------------------------
-
         cur.execute(
             "PRAGMA table_info(contents)"
         )
@@ -392,6 +479,7 @@ def init_db():
         ]
 
         if "views" not in content_cols:
+
             cur.execute(
                 "ALTER TABLE contents "
                 "ADD COLUMN views INTEGER DEFAULT 0"
@@ -407,6 +495,7 @@ def init_db():
         ]
 
         if "notification_enabled" not in chat_cols:
+
             cur.execute(
                 "ALTER TABLE chats "
                 "ADD COLUMN notification_enabled "
@@ -417,12 +506,8 @@ def init_db():
 
     seed_default_categories()
 
-    logger.info("Database initialized.")
-
-
-def now_str():
-    return datetime.now(TZ).strftime(
-        "%Y-%m-%d %H:%M:%S"
+    logger.info(
+        "Database initialized."
     )
 
 
@@ -491,7 +576,10 @@ def save_chat(chat):
     )
 
 
-def set_chat_notifications(chat_id, enabled):
+def set_chat_notifications(
+    chat_id,
+    enabled
+):
 
     db_execute(
         """
@@ -510,7 +598,10 @@ def get_notification_chats():
 
     return db_execute(
         """
-        SELECT chat_id, chat_type, title
+        SELECT
+            chat_id,
+            chat_type,
+            title
         FROM chats
         WHERE notification_enabled=1
         ORDER BY chat_id
@@ -547,7 +638,10 @@ def save_message(
     )
 
 
-def get_history(chat_id, limit=6):
+def get_history(
+    chat_id,
+    limit=6
+):
 
     rows = db_execute(
         """
@@ -559,12 +653,16 @@ def get_history(chat_id, limit=6):
         """,
         (
             chat_id,
-            limit,
+            limit
         ),
         fetch=True
     )
 
-    return rows[::-1] if rows else []
+    return (
+        rows[::-1]
+        if rows
+        else []
+    )
 
 
 def get_state(key):
@@ -579,18 +677,29 @@ def get_state(key):
         fetchone=True
     )
 
-    return row["value"] if row else None
+    return (
+        row["value"]
+        if row
+        else None
+    )
 
 
-def set_state(key, value):
+def set_state(
+    key,
+    value
+):
 
     db_execute(
         """
-        INSERT INTO bot_state(key, value)
+        INSERT INTO bot_state(
+            key,
+            value
+        )
         VALUES (?, ?)
 
         ON CONFLICT(key)
-        DO UPDATE SET value=excluded.value
+        DO UPDATE SET
+            value=excluded.value
         """,
         (
             key,
@@ -599,10 +708,11 @@ def set_state(key, value):
     )
 
 # ============================================================================
-# Default Categories
+# DEFAULT CATEGORIES
 # ============================================================================
 
 DEFAULT_CATEGORIES = [
+
     ("romantic", "❤️ রোমান্টিক", "রোমান্টিক,romantic,প্রেমের"),
     ("comedy", "😂 কমেডি", "কমেডি,comedy,হাসির"),
     ("family", "👨‍👩‍👧 ফ্যামিলি", "ফ্যামিলি,family,পারিবারিক"),
@@ -644,30 +754,89 @@ DEFAULT_CATEGORIES = [
     ("folk", "🪕 লোকগান", "লোকগান,folk"),
     ("islamic_song", "🕋 ইসলামিক গান", "ইসলামিক গান"),
     ("gazal", "🎤 গজল", "গজল,gazal"),
+    ("nasheed", "🕌 নাশিদ", "নাশিদ,nasheed"),
+    ("quran", "📖 কুরআন", "কুরআন,quran"),
+    ("waz", "🎙️ ওয়াজ", "ওয়াজ,waz"),
+    ("dua", "🤲 দোয়া", "দোয়া,dua"),
+    ("hadith", "📜 হাদিস", "হাদিস,hadith"),
+    ("ramadan", "🌙 রমজান", "রমজান,ramadan"),
+    ("eid", "🌙 ঈদ", "ঈদ,eid"),
     ("dance", "💃 ডান্স", "ডান্স,dance"),
     ("sports", "🏆 স্পোর্টস", "স্পোর্টস,sports"),
     ("cricket", "🏏 ক্রিকেট", "ক্রিকেট,cricket"),
     ("football", "⚽ ফুটবল", "ফুটবল,football"),
     ("wrestling", "🤼 রেসলিং", "রেসলিং,wrestling"),
+    ("badminton", "🏸 ব্যাডমিন্টন", "ব্যাডমিন্টন,badminton"),
+    ("tennis", "🎾 টেনিস", "টেনিস,tennis"),
+    ("basketball", "🏀 বাস্কেটবল", "বাস্কেটবল,basketball"),
+    ("volleyball", "🏐 ভলিবল", "ভলিবল,volleyball"),
     ("news", "📰 নিউজ", "নিউজ,news"),
     ("technology", "💻 টেকনোলজি", "টেক,technology,tech"),
+    ("ai", "🤖 AI", "ai,এআই"),
+    ("programming", "👨‍💻 প্রোগ্রামিং", "প্রোগ্রামিং,programming,coding"),
     ("gaming", "🎮 গেমিং", "গেমিং,gaming"),
+    ("mobile_games", "📱 মোবাইল গেম", "মোবাইল গেম"),
+    ("pc_games", "🖥️ PC গেম", "pc game,কম্পিউটার গেম"),
     ("travel", "✈️ ভ্রমণ", "ভ্রমণ,travel"),
     ("nature", "🌿 প্রকৃতি", "প্রকৃতি,nature"),
     ("rain", "🌧️ বৃষ্টি", "বৃষ্টি,rain"),
     ("winter", "❄️ শীত", "শীত,winter,শীতের"),
     ("summer", "☀️ গরম", "গরম,summer,hot,heat"),
+    ("storm", "⛈️ ঝড়", "ঝড়,storm"),
     ("food", "🍔 খাবার", "খাবার,food"),
     ("cooking", "👨‍🍳 রান্না", "রান্না,cooking"),
+    ("recipe", "🍳 রেসিপি", "রেসিপি,recipe"),
+    ("street_food", "🌮 স্ট্রিট ফুড", "স্ট্রিট ফুড"),
     ("animals", "🐾 প্রাণী", "প্রাণী,animals"),
+    ("pets", "🐶 পোষা প্রাণী", "পোষা প্রাণী,pets"),
     ("kids", "🧒 শিশুদের", "শিশু,kids"),
     ("cartoon", "🧸 কার্টুন", "কার্টুন,cartoon"),
+    ("anime", "⚔️ Anime", "anime"),
     ("documentary", "🎥 ডকুমেন্টারি", "ডকুমেন্টারি,documentary"),
     ("history", "🏛️ ইতিহাস", "ইতিহাস,history"),
     ("science", "🔬 বিজ্ঞান", "বিজ্ঞান,science"),
+    ("space", "🚀 মহাকাশ", "মহাকাশ,space"),
     ("health", "🩺 স্বাস্থ্য", "স্বাস্থ্য,health"),
     ("fitness", "💪 ফিটনেস", "ফিটনেস,fitness"),
     ("lifestyle", "✨ লাইফস্টাইল", "লাইফস্টাইল,lifestyle"),
+    ("fashion", "👕 ফ্যাশন", "ফ্যাশন,fashion"),
+    ("beauty", "💄 বিউটি", "বিউটি,beauty"),
+    ("cars", "🚗 গাড়ি", "গাড়ি,cars"),
+    ("bikes", "🏍️ বাইক", "বাইক,bikes"),
+    ("motivation", "🔥 অনুপ্রেরণা", "অনুপ্রেরণা,motivation"),
+    ("quotes", "💬 উক্তি", "উক্তি,quotes"),
+    ("poetry", "📝 কবিতা", "কবিতা,poetry"),
+    ("story", "📖 গল্প", "গল্প,story"),
+    ("jokes", "🤣 জোকস", "জোকস,jokes"),
+    ("memes", "😂 মিম", "মিম,memes"),
+    ("status", "💫 স্ট্যাটাস", "স্ট্যাটাস,status"),
+    ("romantic_status", "💞 প্রেমের স্ট্যাটাস", "প্রেমের স্ট্যাটাস"),
+    ("sad_status", "💔 স্যাড স্ট্যাটাস", "স্যাড স্ট্যাটাস"),
+    ("funny_status", "😂 ফানি স্ট্যাটাস", "ফানি স্ট্যাটাস"),
+    ("love_story", "💖 প্রেমের গল্প", "প্রেমের গল্প"),
+    ("school_story", "🏫 স্কুলের গল্প", "স্কুলের গল্প"),
+    ("village_story", "🌾 গ্রামের গল্প", "গ্রামের গল্প"),
+    ("ghost_story", "👻 ভূতের গল্প", "ভূতের গল্প"),
+    ("crime", "🔎 ক্রাইম", "ক্রাইম,crime"),
+    ("detective", "🕵️ গোয়েন্দা", "গোয়েন্দা,detective"),
+    ("political", "🏛️ রাজনৈতিক", "রাজনৈতিক,political"),
+    ("business", "💰 ব্যবসা", "ব্যবসা,business"),
+    ("earning", "💵 আয়", "আয়,earning"),
+    ("freelancing", "💻 ফ্রিল্যান্সিং", "ফ্রিল্যান্সিং,freelancing"),
+    ("jobs", "💼 চাকরি", "চাকরি,jobs"),
+    ("study", "📚 পড়াশোনা", "পড়াশোনা,study"),
+    ("exam", "📝 পরীক্ষা", "পরীক্ষা,exam"),
+    ("english", "🇬🇧 ইংরেজি", "ইংরেজি,english"),
+    ("bangla", "🇧🇩 বাংলা", "বাংলা,bangla"),
+    ("language", "🗣️ ভাষা", "ভাষা,language"),
+    ("photography", "📷 ফটোগ্রাফি", "ফটোগ্রাফি,photography"),
+    ("cinematic", "🎞️ সিনেমাটিক", "সিনেমাটিক,cinematic"),
+    ("editing", "✂️ এডিটিং", "এডিটিং,editing"),
+    ("creator", "🎥 ক্রিয়েটর", "ক্রিয়েটর,creator"),
+    ("youtube_tips", "▶️ YouTube Tips", "youtube tips"),
+    ("telegram", "✈️ Telegram", "telegram"),
+    ("apps", "📱 Apps", "অ্যাপ,apps"),
+    ("internet", "🌐 Internet", "ইন্টারনেট,internet"),
     ("other", "📂 অন্যান্য", "অন্যান্য,other"),
 ]
 
@@ -679,12 +848,20 @@ def seed_default_categories():
         fetchone=True
     )
 
-    count = count_row["c"] if count_row else 0
+    count = (
+        count_row["c"]
+        if count_row
+        else 0
+    )
 
+    # Important:
+    # Existing database categories are NEVER deleted.
     if count > 0:
         return
 
-    for index, item in enumerate(DEFAULT_CATEGORIES):
+    for index, item in enumerate(
+        DEFAULT_CATEGORIES
+    ):
 
         key, label, aliases = item
 
@@ -710,7 +887,9 @@ def seed_default_categories():
         )
 
 
-def get_categories(active_only=True):
+def get_categories(
+    active_only=True
+):
 
     if active_only:
 
@@ -747,6 +926,13 @@ def get_category(key):
     )
 
 
+def category_exists(key):
+
+    return bool(
+        get_category(key)
+    )
+
+
 def get_category_labels():
 
     rows = get_categories()
@@ -756,16 +942,8 @@ def get_category_labels():
         for row in rows
     }
 
-
-def category_exists(key):
-
-    return bool(
-        get_category(key)
-    )
-
-
 # ============================================================================
-# Text Helpers
+# TEXT HELPERS
 # ============================================================================
 
 
@@ -793,7 +971,9 @@ def normalize_text(text):
 
 def clean_category_key(value):
 
-    value = normalize_text(value)
+    value = normalize_text(
+        value
+    )
 
     value = re.sub(
         r"\s+",
@@ -809,9 +989,8 @@ def clean_category_key(value):
 
     return value[:50]
 
-
 # ============================================================================
-# Category Intent System
+# CATEGORY INTENT
 # ============================================================================
 
 
@@ -825,50 +1004,80 @@ def category_alias_map():
 
         key = row["key"]
 
-        result[normalize_text(key)] = key
+        result[
+            normalize_text(key)
+        ] = key
 
         label_clean = normalize_text(
             row["label"]
         )
 
         if label_clean:
-            result[label_clean] = key
+
+            result[
+                label_clean
+            ] = key
 
         aliases = row["aliases"] or ""
 
         for alias in aliases.split(","):
 
-            alias = normalize_text(alias)
+            alias = normalize_text(
+                alias
+            )
 
             if alias:
-                result[alias] = key
 
-    # Common direct aliases
+                result[
+                    alias
+                ] = key
+
+    # Direct aliases
     result.update({
         "নাটক": "natok",
+        "নাটক দেন": "natok",
+        "নাটক দাও": "natok",
         "drama": "natok",
         "natok": "natok",
+
         "গান": "music",
+        "গান দেন": "music",
+        "গান দাও": "music",
         "song": "music",
+        "music": "music",
+
         "ভিডিও": "other",
+        "ভিডিও দেন": "other",
+        "ভিডিও দাও": "other",
         "video": "other",
+
         "মুভি": "movie",
         "movie": "movie",
+
         "শীত": "winter",
         "শীতের": "winter",
         "শীতের ভিডিও": "winter",
+
         "বৃষ্টি": "rain",
+        "বৃষ্টি ভিডিও": "rain",
+
         "গরম": "summer",
+
         "ক্রিকেট": "cricket",
         "ফুটবল": "football",
         "স্পোর্টস": "sports",
+
         "ইসলামিক": "islamic",
         "গজল": "gazal",
+        "ওয়াজ": "waz",
+
         "ভাইরাল": "viral",
         "ট্রেন্ডিং": "trending",
+
         "কার্টুন": "cartoon",
         "গেম": "gaming",
         "গেমিং": "gaming",
+
         "ভ্রমণ": "travel",
         "প্রকৃতি": "nature",
         "খাবার": "food",
@@ -880,18 +1089,19 @@ def category_alias_map():
 
 def detect_category_intent(text):
 
-    norm = normalize_text(text)
+    norm = normalize_text(
+        text
+    )
 
     if not norm:
         return None
 
     aliases = category_alias_map()
 
-    # Exact phrase first
     if norm in aliases:
+
         return aliases[norm]
 
-    # Longest aliases first
     candidates = sorted(
         aliases.items(),
         key=lambda x: len(x[0]),
@@ -904,17 +1114,19 @@ def detect_category_intent(text):
             continue
 
         if re.search(
-            r"(^|\s)" +
-            re.escape(alias) +
-            r"($|\s)",
+            r"(^|\s)"
+            + re.escape(alias)
+            + r"($|\s)",
             norm
         ):
             return key
 
-    # Substring fallback for Bengali phrases
     for alias, key in candidates:
 
-        if len(alias) >= 3 and alias in norm:
+        if (
+            len(alias) >= 3
+            and alias in norm
+        ):
             return key
 
     return None
@@ -922,16 +1134,19 @@ def detect_category_intent(text):
 
 def is_category_request(text):
 
-    norm = normalize_text(text)
+    norm = normalize_text(
+        text
+    )
 
-    category = detect_category_intent(norm)
+    category = detect_category_intent(
+        norm
+    )
 
     if not category:
         return False
 
     request_words = [
         "আছে",
-        "আছে কি",
         "দাও",
         "দেন",
         "চাই",
@@ -960,20 +1175,15 @@ def is_category_request(text):
     ):
         return True
 
-    # A category alone should also open its category.
-    # Example: "নাটক", "শীত", "ক্রিকেট"
-    category_row = get_category(category)
+    category_row = get_category(
+        category
+    )
 
-    if category_row:
-        return True
-
-    return False
-
+    return bool(category_row)
 
 # ============================================================================
-# Category Buttons
+# CATEGORY BUTTONS
 # ============================================================================
-
 
 CATEGORY_PAGE_SIZE = 12
 
@@ -1003,10 +1213,13 @@ def category_buttons(
         )
     )
 
-    start = page * CATEGORY_PAGE_SIZE
+    start = (
+        page * CATEGORY_PAGE_SIZE
+    )
 
     items = categories[
-        start:start + CATEGORY_PAGE_SIZE
+        start:
+        start + CATEGORY_PAGE_SIZE
     ]
 
     buttons = []
@@ -1019,13 +1232,16 @@ def category_buttons(
 
         row = []
 
-        for item in items[i:i + 2]:
+        for item in items[
+            i:i + 2
+        ]:
 
             row.append(
                 InlineKeyboardButton(
                     item["label"],
                     callback_data=(
-                        f"{prefix}:{item['key']}"
+                        f"{prefix}:"
+                        f"{item['key']}"
                     )
                 )
             )
@@ -1040,7 +1256,8 @@ def category_buttons(
             InlineKeyboardButton(
                 "⬅️ Back",
                 callback_data=(
-                    f"{prefix}_page:{page - 1}"
+                    f"{prefix}_page:"
+                    f"{page - 1}"
                 )
             )
         )
@@ -1051,7 +1268,8 @@ def category_buttons(
             InlineKeyboardButton(
                 "🔽 See More",
                 callback_data=(
-                    f"{prefix}_page:{page + 1}"
+                    f"{prefix}_page:"
+                    f"{page + 1}"
                 )
             )
         )
@@ -1072,19 +1290,24 @@ def category_prompt(
     heading="📂 Category"
 ):
 
-    buttons, page, total_pages = category_buttons(
-        page,
-        prefix
+    buttons, page, total_pages = (
+        category_buttons(
+            page,
+            prefix
+        )
     )
 
-    total = len(get_categories())
+    total = len(
+        get_categories()
+    )
 
     if prefix == "usercat":
 
         text = (
             f"{heading}\n\n"
             "অবশ্যই! 👇\n"
-            "আপনার প্রয়োজনীয় Category নির্বাচন করুন।\n\n"
+            "আপনার প্রয়োজনীয় Category "
+            "নির্বাচন করুন।\n\n"
             f"📂 মোট Category: {total}\n"
             f"📄 Page {page + 1}/{total_pages}"
         )
@@ -1092,94 +1315,30 @@ def category_prompt(
     else:
 
         text = (
-            "🏷️ **Category নির্বাচন করুন**\n\n"
-            "ভিডিওটি কোন Category-তে রাখতে চান "
-            "সেটি নির্বাচন করুন। 👇\n\n"
+            "🏷️ Category নির্বাচন করুন\n\n"
+            "ভিডিওটি কোন Category-তে রাখতে "
+            "চান সেটি নির্বাচন করুন। 👇\n\n"
             f"📂 মোট Category: {total}\n"
             f"📄 Page {page + 1}/{total_pages}"
         )
 
     return (
         text,
-        InlineKeyboardMarkup(buttons)
-    )
-
-
-async def show_category_content(
-    message,
-    category_key
-):
-
-    category = get_category(
-        category_key
-    )
-
-    if not category:
-
-        await message.reply_text(
-            "❌ এই Category পাওয়া যায়নি।"
+        InlineKeyboardMarkup(
+            buttons
         )
-
-        return
-
-    items = get_contents_by_category(
-        category_key,
-        10
     )
-
-    if not items:
-
-        await message.reply_text(
-            "😔 **এই Category-তে এখনো কোনো "
-            "কন্টেন্ট যোগ করা হয়নি।**\n\n"
-            f"📂 Category: {category['label']}\n\n"
-            "নতুন কন্টেন্ট এলে এখানেই পাওয়া যাবে।",
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-        return
-
-    buttons = []
-
-    for item in items:
-
-        title = str(
-            item["title"]
-        )[:55]
-
-        buttons.append([
-            InlineKeyboardButton(
-                f"🎬 {title}",
-                callback_data=(
-                    f"send_media_{item['id']}"
-                )
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "⬅️ Category List",
-            callback_data="usercat_page:0"
-        )
-    ])
-
-    await message.reply_text(
-        f"📂 **{category['label']}**\n\n"
-        "অবশ্যই! নিচের কন্টেন্ট থেকে "
-        "যেটি চান সেটি নির্বাচন করুন। 👇",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=ParseMode.MARKDOWN
-    )
-
 
 # ============================================================================
-# Content Search
+# CONTENT
 # ============================================================================
 
 
 def detect_category(title):
 
-    t = normalize_text(title)
+    t = normalize_text(
+        title
+    )
 
     if any(
         x in t
@@ -1227,7 +1386,6 @@ def detect_category(title):
         x in t
         for x in [
             "শীত",
-            "শীতের",
             "winter"
         ]
     ):
@@ -1260,7 +1418,9 @@ def search_content(
     category=None
 ):
 
-    query = normalize_text(query)
+    query = normalize_text(
+        query
+    )
 
     if not query:
         return None
@@ -1307,7 +1467,7 @@ def search_content(
         w
         for w in query.split()
         if len(w) >= 2
-    ][:4]
+    ][:5]
 
     if not words:
         return None
@@ -1327,7 +1487,9 @@ def search_content(
         sql = (
             "SELECT * FROM contents "
             "WHERE category=? AND ("
-            + " OR ".join(conditions)
+            + " OR ".join(
+                conditions
+            )
             + ") "
             "ORDER BY views DESC,id DESC "
             "LIMIT 1"
@@ -1345,7 +1507,9 @@ def search_content(
     sql = (
         "SELECT * FROM contents "
         "WHERE ("
-        + " OR ".join(conditions)
+        + " OR ".join(
+            conditions
+        )
         + ") "
         "ORDER BY views DESC,id DESC "
         "LIMIT 1"
@@ -1358,7 +1522,9 @@ def search_content(
     )
 
 
-def increment_views(content_id):
+def increment_views(
+    content_id
+):
 
     db_execute(
         """
@@ -1396,7 +1562,9 @@ def get_contents_by_category(
     )
 
 
-def get_top_trending(limit=5):
+def get_top_trending(
+    limit=5
+):
 
     return db_execute(
         """
@@ -1414,18 +1582,95 @@ def get_top_trending(limit=5):
         fetch=True
     )
 
+
+async def show_category_content(
+    message,
+    category_key,
+    send_waiting=True
+):
+
+    category = get_category(
+        category_key
+    )
+
+    if not category:
+
+        await message.reply_text(
+            "❌ এই Category পাওয়া যায়নি।"
+        )
+
+        return
+
+    # User specifically requested this behavior.
+    if send_waiting:
+
+        await message.reply_text(
+            "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+        )
+
+    items = get_contents_by_category(
+        category_key,
+        10
+    )
+
+    if not items:
+
+        await message.reply_text(
+            "😔 এই Category-তে এখনো কোনো "
+            "কন্টেন্ট যোগ করা হয়নি।\n\n"
+            f"📂 Category: {category['label']}\n\n"
+            "নতুন কন্টেন্ট এলে এখানেই পাওয়া যাবে।"
+        )
+
+        return
+
+    buttons = []
+
+    for item in items:
+
+        title = str(
+            item["title"]
+        )[:55]
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"🎬 {title}",
+                callback_data=(
+                    f"send_media_{item['id']}"
+                )
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Category List",
+            callback_data="usercat_page:0"
+        )
+    ])
+
+    await message.reply_text(
+        f"📂 {category['label']}\n\n"
+        "নিচের কন্টেন্ট থেকে যেটি চান "
+        "সেটি নির্বাচন করুন। 👇",
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        )
+    )
+
 # ============================================================================
-# OpenAI
+# OPENAI
 # ============================================================================
 
 
 SYSTEM_INSTRUCTIONS = f"""
-তুমি একটি দ্রুত, নির্ভুল Telegram AI সহকারী।
+তুমি একটি দ্রুত, বন্ধুসুলভ Telegram AI সহকারী।
 
-প্রধান অ্যাডমিন:
-@{ADMIN_USERNAME}
+তোমার Boss:
+{BOSS_NAME}
+Username:
+{BOSS_USERNAME}
 
-User ID:
+Admin ID:
 {ADMIN_IDS[0]}
 
 নিয়ম:
@@ -1433,15 +1678,17 @@ User ID:
 1. ব্যবহারকারী বাংলায় লিখলে বাংলায় উত্তর দেবে।
 2. Banglish হলে সহজ বাংলা/Banglish বুঝে উত্তর দেবে।
 3. English হলে English-এ উত্তর দেবে।
-4. কোনো কন্টেন্ট Category সম্পর্কে ব্যবহারকারী জিজ্ঞেস করলে
-   Category system-এর বাইরে অনুমান করবে না।
+4. সংক্ষিপ্ত এবং সরাসরি উত্তর দেবে।
 5. Bot database-এ থাকা মিডিয়া ছাড়া কোনো মিডিয়া আছে বলে দাবি করবে না।
-6. User যদি "নাটক", "গান", "শীত", "ক্রিকেট",
-   "বৃষ্টি", "মুভি" ইত্যাদি Category চায়,
-   তখন Category selection system ব্যবহার করা হবে।
-7. User-এর কথার অর্থ না বুঝলে বানিয়ে উত্তর দেবে না।
-8. সংক্ষিপ্ত এবং সরাসরি উত্তর দেবে।
-9. অ্যাডমিন সম্পর্কে:
+6. Category system-এর কাজ local bot code করবে।
+7. নিজের পরিচয় চাইলে বলবে:
+   "আমার Boss, TOMAL CHOWDHURY আমাকে তৈরি করছে।
+   Boss username: @tomalchowdhury2"
+8. Bot কোথায় থাকে জিজ্ঞেস করলে বলবে:
+   "আমার কোনো বাসা নেই, আমি আমার user name,
+   TOMAL CHOWDHURY বসের সাথে থাকি এবং বসের কথা শুনি।
+   Boss: @tomalchowdhury2"
+9. Admin সম্পর্কে:
    @{ADMIN_USERNAME}
 """
 
@@ -1456,7 +1703,10 @@ async def generate_chatgpt_response(
         limit=6
     )
 
-    if not openai_client or not OPENAI_API_KEY:
+    if (
+        not openai_client
+        or not OPENAI_API_KEY
+    ):
 
         return (
             "👋 আপনার বার্তা পেয়েছি!\n\n"
@@ -1521,28 +1771,17 @@ async def generate_chatgpt_response(
 
     return (
         "দুঃখিত, এখন AI উত্তর দিতে একটু সমস্যা হচ্ছে। "
-        "কিছুক্ষণ পর আবার চেষ্টা করুন।"
+        "কিছুক্ষণ পর আবার চেষ্টা করুন। 🙏"
     )
 
 # ============================================================================
-# AdsGram Bot Integration
+# ADSGRAM
 # ============================================================================
 
 
-async def get_adsgram_ad(user_id):
-
-    """
-    AdsGram official Telegram Bot integration.
-
-    Endpoint:
-    https://api.adsgram.ai/advbot
-
-    Required:
-    tgid
-    blockid
-    language
-    token
-    """
+async def get_adsgram_ad(
+    user_id
+):
 
     if not ADSGRAM_ENABLED:
 
@@ -1578,7 +1817,9 @@ async def get_adsgram_ad(user_id):
             timeout=timeout
         ) as session:
 
-            async with session.get(url) as response:
+            async with session.get(
+                url
+            ) as response:
 
                 if response.status != 200:
 
@@ -1593,7 +1834,10 @@ async def get_adsgram_ad(user_id):
                     content_type=None
                 )
 
-                if not isinstance(data, dict):
+                if not isinstance(
+                    data,
+                    dict
+                ):
                     return None
 
                 return data
@@ -1614,20 +1858,11 @@ async def send_adsgram_ad(
     user_id
 ):
 
-    """
-    Sends AdsGram ad before media.
-
-    Returns:
-    True  = ad was successfully sent
-    False = no ad available / AdsGram disabled
-    """
-
     data = await get_adsgram_ad(
         user_id
     )
 
     if not data:
-
         return False
 
     text_html = data.get(
@@ -1666,7 +1901,10 @@ async def send_adsgram_ad(
             )
         ])
 
-    if reward_url and button_reward_name:
+    if (
+        reward_url
+        and button_reward_name
+    ):
 
         buttons.append([
             InlineKeyboardButton(
@@ -1683,7 +1921,9 @@ async def send_adsgram_ad(
 
     if not text_html:
 
-        text_html = "📢 Advertisement"
+        text_html = (
+            "📢 Advertisement"
+        )
 
     try:
 
@@ -1708,11 +1948,6 @@ async def send_adsgram_ad(
                 protect_content=True,
             )
 
-        logger.info(
-            "AdsGram ad sent to user=%s",
-            user_id
-        )
-
         return True
 
     except Exception as e:
@@ -1725,8 +1960,19 @@ async def send_adsgram_ad(
         return False
 
 # ============================================================================
-# Admin notifications
+# ADMIN NOTIFICATIONS
 # ============================================================================
+
+
+def safe_markdown(text):
+
+    if not text:
+        return ""
+
+    return str(text).replace(
+        "`",
+        "'"
+    )
 
 
 async def send_admin_alert(
@@ -1765,11 +2011,12 @@ async def notify_admin_missing_content(
     text = (
         "📢 **[নতুন কন্টেন্টের ডিমান্ড]**\n\n"
         f"👤 **ইউজার:** "
-        f"{user.first_name} "
+        f"{safe_markdown(user.first_name)} "
         f"(@{user.username or 'নাই'})\n"
         f"🆔 **User ID:** `{user.id}`\n"
         f"📁 **Category:** {content_type}\n"
-        f"🔍 **রিকুয়েস্ট:** `{query}`\n"
+        f"🔍 **রিকুয়েস্ট:** "
+        f"`{safe_markdown(query)}`\n"
         f"⏰ **সময়:** {now_str()}\n\n"
         f"👉 @{ADMIN_USERNAME} "
         "কন্টেন্টটি আপলোড করতে পারেন।"
@@ -1786,7 +2033,7 @@ async def notify_admin_missing_content(
                     url=(
                         f"https://t.me/"
                         f"{user.username}"
-                    ),
+                    )
                 )
             ]
         ])
@@ -1807,12 +2054,12 @@ async def notify_admin_user_help(
     text = (
         "⚠️ **[ইউজার সাহায্য চেয়েছে]**\n\n"
         f"👤 **User:** "
-        f"{user.first_name} "
+        f"{safe_markdown(user.first_name)} "
         f"(@{user.username or 'N/A'})\n"
         f"🆔 **ID:** `{user.id}`\n"
         f"⏰ **Time:** {now_str()}\n\n"
         f"💬 **বার্তা:**\n"
-        f"_{user_msg}_"
+        f"_{safe_markdown(user_msg)}_"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -1822,8 +2069,9 @@ async def notify_admin_user_help(
                 url=(
                     f"https://t.me/{user.username}"
                     if user.username
-                    else f"tg://user?id={user.id}"
-                ),
+                    else
+                    f"tg://user?id={user.id}"
+                )
             )
         ]
     ])
@@ -1835,7 +2083,7 @@ async def notify_admin_user_help(
     )
 
 # ============================================================================
-# Media Delivery
+# MEDIA DELIVERY
 # ============================================================================
 
 
@@ -1852,10 +2100,7 @@ async def deliver_media(
     file_id = row["file_id"]
     title = row["title"]
 
-    # ------------------------------------------------------------
     # Ads first
-    # ------------------------------------------------------------
-
     if user:
 
         await send_adsgram_ad(
@@ -1864,18 +2109,13 @@ async def deliver_media(
             user.id
         )
 
-    # ------------------------------------------------------------
-    # View count
-    # ------------------------------------------------------------
-
     increment_views(
         content_id
     )
 
     await message.reply_text(
-        f"🎬 **{title}**\n\n"
-        "⏳ পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন...",
-        parse_mode=ParseMode.MARKDOWN
+        f"🎬 {title}\n\n"
+        "⏳ পাঠানো হচ্ছে, দয়া করে অপেক্ষা করুন..."
     )
 
     try:
@@ -1924,7 +2164,7 @@ async def deliver_media(
                     url=(
                         f"https://t.me/"
                         f"{ADMIN_USERNAME}"
-                    ),
+                    )
                 )
             ]
         ])
@@ -1933,7 +2173,7 @@ async def deliver_media(
             "✅ কন্টেন্ট সফলভাবে পাঠানো হয়েছে!\n"
             "আর কোনো নাটক, গান বা ভিডিও লাগলে "
             "নাম লিখুন। 🤝",
-            reply_markup=keyboard,
+            reply_markup=keyboard
         )
 
     except Exception as e:
@@ -1964,7 +2204,10 @@ async def handle_admin_media_upload(
     user = update.effective_user
     message = update.effective_message
 
-    if not user or not is_admin(user.id):
+    if (
+        not user
+        or not is_admin(user.id)
+    ):
         return False
 
     media_type = None
@@ -1998,20 +2241,23 @@ async def handle_admin_media_upload(
     if not file_id:
         return False
 
-    context.user_data["pending_media"] = {
+    context.user_data[
+        "pending_media"
+    ] = {
         "media_type": media_type,
         "file_id": file_id,
     }
 
-    context.user_data["waiting_title"] = True
+    context.user_data[
+        "waiting_title"
+    ] = True
 
     await message.reply_text(
-        f"📥 **{media_type.upper()} মিডিয়া ফাইল পেয়েছি!**\n\n"
-        "📝 এই কন্টেন্টের **নাম (Title)** লিখে পাঠান।\n\n"
+        f"📥 {media_type.upper()} মিডিয়া ফাইল পেয়েছি!\n\n"
+        "📝 এই কন্টেন্টের নাম (Title) লিখে পাঠান।\n\n"
         "যেমন:\n"
-        "`নতুন ঈদের নাটক`\n"
-        "`বাংলা গান`",
-        parse_mode=ParseMode.MARKDOWN
+        "নতুন ঈদের নাটক\n"
+        "বাংলা গান"
     )
 
     return True
@@ -2078,17 +2324,16 @@ async def handle_admin_title_save(
     )
 
     await message.reply_text(
-        f"✅ **নাম গ্রহণ করা হয়েছে:**\n"
+        f"✅ নাম গ্রহণ করা হয়েছে:\n"
         f"🎬 {title}\n\n"
         + text,
-        reply_markup=markup,
-        parse_mode=ParseMode.MARKDOWN
+        reply_markup=markup
     )
 
     return True
 
 # ============================================================================
-# Weather / Prayer
+# WEATHER / PRAYER
 # ============================================================================
 
 
@@ -2114,14 +2359,16 @@ async def get_weather():
             timeout=timeout
         ) as session:
 
-            async with session.get(url) as res:
+            async with session.get(
+                url
+            ) as res:
 
                 if res.status != 200:
                     return None
 
                 data = await res.json()
 
-        c = data.get(
+        current = data.get(
             "current",
             {}
         )
@@ -2129,11 +2376,11 @@ async def get_weather():
         return (
             f"🌤️ **{PRAYER_CITY} আবহাওয়া**\n\n"
             f"🌡️ তাপমাত্রা: "
-            f"**{c.get('temperature_2m', '?')}°C**\n"
+            f"**{current.get('temperature_2m', '?')}°C**\n"
             f"💧 আর্দ্রতা: "
-            f"**{c.get('relative_humidity_2m', '?')}%**\n"
+            f"**{current.get('relative_humidity_2m', '?')}%**\n"
             f"💨 বাতাস: "
-            f"**{c.get('wind_speed_10m', '?')} km/h**"
+            f"**{current.get('wind_speed_10m', '?')} km/h**"
         )
 
     except Exception as e:
@@ -2157,12 +2404,15 @@ async def get_prayer_data():
 
     today = datetime.now(
         TZ
-    ).strftime("%Y-%m-%d")
+    ).strftime(
+        "%Y-%m-%d"
+    )
 
     if (
         _prayer_cache_date == today
         and _prayer_cache_data
     ):
+
         return _prayer_cache_data
 
     url = (
@@ -2182,7 +2432,9 @@ async def get_prayer_data():
             timeout=timeout
         ) as session:
 
-            async with session.get(url) as res:
+            async with session.get(
+                url
+            ) as res:
 
                 if res.status != 200:
                     return None
@@ -2230,8 +2482,47 @@ async def get_prayer_times():
     )
 
 # ============================================================================
-# Automatic Notifications
+# PRAYER FUN CAPTIONS
 # ============================================================================
+
+
+PRAYER_CAPTIONS = {
+
+    "Fajr": [
+        "🌅 ফজরের সময় হয়েছে—ঘুম ভেঙে ওজু করে নামাজ পড়ে নিন। 🤲❤️",
+        "🌄 নতুন দিনের শুরু ফজরের নামাজ দিয়ে হোক। সবাই নামাজ পড়ে নিন। 🕌✨",
+        "😴 ঘুম আর কত? ফজরের আজান হয়েছে—চলুন নামাজ পড়ে নিই। 🤲",
+        "🌅 ফজর এসেছে, আল্লাহর স্মরণে দিনটা শুরু করি। 🕌❤️",
+    ],
+
+    "Dhuhr": [
+        "☀️ এখন যোহরের সময়—সবাই নামাজ পড়ে নিন। 🕌🤲",
+        "🕛 দুপুর হয়েছে, কাজের মাঝে যোহরের নামাজটা পড়ে নিন। ❤️🕌",
+        "☀️ ব্যস্ততার মাঝেও নামাজ ভুলবেন না—এখন যোহরের সময়। 🤲",
+        "🕌 যোহরের সময় হয়েছে। একটু কাজ থামিয়ে নামাজ পড়ে আসুন। ❤️",
+    ],
+
+    "Asr": [
+        "🌇 এখন আসরের সময়—সবাই নামাজ পড়ে নিন। 🕌🤲",
+        "🏏 খেলাধুলা/কাজ একটু থামিয়ে আসরের নামাজ পড়ে নিন। ❤️",
+        "🌤️ বিকেলের সুন্দর সময়ে আসরের নামাজ আদায় করুন। 🕌✨",
+        "🤲 আসরের সময় হয়ে গেছে—চলুন নামাজ পড়ে নিই। ❤️",
+    ],
+
+    "Maghrib": [
+        "🌆 এখন মাগরিবের সময়—সবাই নামাজ পড়ে নিন। 🕌🤲",
+        "🌇 সূর্য ডুবে গেছে, মাগরিবের নামাজটা পড়ে নিন। ❤️",
+        "🕌 সন্ধ্যার শুরুটা নামাজ দিয়ে করি—মাগরিবের সময় হয়েছে। 🤲✨",
+        "🌙 মাগরিবের সময় হয়েছে। আল্লাহর স্মরণে কয়েক মিনিট দিন। ❤️🕌",
+    ],
+
+    "Isha": [
+        "🌙 এখন এশার সময়—সবাই নামাজ পড়ে নিন। 🕌🤲",
+        "😴 ঘুমানোর আগে এশার নামাজটা পড়ে নিন। ❤️",
+        "🌙 রাত হয়েছে, এশার নামাজ আদায় করে তারপর বিশ্রাম নিন। 🕌",
+        "🤲 দিনের শেষ নামাজ এশা—চলুন নামাজ পড়ে নিই। ❤️✨",
+    ],
+}
 
 
 PRAYER_NAMES = {
@@ -2242,85 +2533,156 @@ PRAYER_NAMES = {
     "Isha": "এশা",
 }
 
+# ============================================================================
+# HOURLY AUTOMATIC MESSAGE
+# ============================================================================
+
 
 def hourly_message(hour):
 
     h12 = hour % 12 or 12
-    ampm = "AM" if hour < 12 else "PM"
 
-    text = (
-        f"🕐 **সময়: {h12}:00 {ampm} "
-        "(বাংলাদেশ সময়)**\n\n"
+    ampm = (
+        "AM"
+        if hour < 12
+        else "PM"
     )
+
+    parts = [
+        (
+            f"🕐 **সময়: {h12}:00 {ampm} "
+            "(বাংলাদেশ সময়)**\n"
+        )
+    ]
 
     if hour == WAKE_HOUR:
 
-        text += (
-            "🌅 **ঘুম থেকে ওঠার সময়!**\n"
-            "সুপ্রভাত! পানি পান করুন এবং "
-            "আজকের দিনের পরিকল্পনা করুন। ☀️💧\n\n"
+        parts.append(
+            random.choice([
+                "🌅 **ঘুম থেকে ওঠার সময়!**\n"
+                "সুপ্রভাত! পানি পান করুন এবং দিনটা সুন্দরভাবে শুরু করুন। ☀️💧",
+
+                "🌞 সকাল হয়ে গেছে! ঘুম থেকে উঠে মুখ ধুয়ে পানি পান করুন। 💧😊",
+
+                "🌅 উঠে পড়ুন! আজকের দিনটা নতুন কিছু করার জন্য। 💪✨",
+            ])
         )
 
     if hour in STUDY_HOURS:
 
-        text += (
-            "📚 **পড়াশোনার সময়!**\n"
-            "এখন মনোযোগ দিয়ে পড়াশোনা/"
-            "স্কিল শেখার জন্য সময় দিন। 📖\n\n"
+        parts.append(
+            random.choice([
+                "📚 **পড়াশোনার সময়!**\n"
+                "এখন মনোযোগ দিয়ে পড়াশোনা বা স্কিল শেখার সময়। 📖🎯",
+
+                "📖 বইটা খুলে বসার সময় হয়েছে। অল্প হলেও আজ পড়ুন। 💪📚",
+
+                "🎓 আজকের পড়াটা আজই শেষ করুন—আগামীকালের জন্য জমিয়ে রাখবেন না। 📚",
+            ])
         )
 
     if hour in SPORTS_HOURS:
 
-        text += (
-            "⚽ **খেলার/ব্যায়ামের সময়!**\n"
-            "কিছুক্ষণ খেলাধুলা বা শরীরচর্চা করুন। "
-            "🏃‍♂️\n\n"
+        parts.append(
+            random.choice([
+                "⚽ **খেলার/ব্যায়ামের সময়!**\n"
+                "কিছুক্ষণ খেলাধুলা বা শরীরচর্চা করুন। 🏃‍♂️💪",
+
+                "🏏 একটু শরীরচর্চা করুন, শরীর ভালো থাকলে মনও ভালো থাকবে। 💪😊",
+
+                "⚽ খেলাধুলার সময়! ফোনটা নামিয়ে একটু নড়াচড়া করুন। 😄🏃",
+            ])
         )
 
     if hour in WORK_HOURS:
 
-        text += (
-            "💼 **কাজের সময়!**\n"
-            "গুরুত্বপূর্ণ কাজগুলো গুছিয়ে করুন। "
-            "✅\n\n"
+        parts.append(
+            random.choice([
+                "💼 **কাজের সময়!**\n"
+                "গুরুত্বপূর্ণ কাজগুলো গুছিয়ে করুন। ✅",
+
+                "💻 কাজের সময় হয়েছে। আজকের সবচেয়ে জরুরি কাজটা আগে শেষ করুন। 🎯",
+
+                "💼 কাজের মাঝে মনোযোগ রাখুন—একটা একটা করে কাজ শেষ করুন। 💪",
+            ])
         )
 
-    if hour == SLEEP_HOUR:
+    if hour == 8:
 
-        text += (
-            "😴 **ঘুমানোর সময়!**\n"
-            "সময়মতো ঘুমান এবং শরীর ও মনকে "
-            "বিশ্রাম দিন। 🌙\n\n"
+        parts.append(
+            "🍳 সকালবেলার নাশতা করার সময়! শরীরকে না খাইয়ে রাখবেন না। 🥚☕❤️"
         )
 
     if hour == 12:
 
-        text += (
-            "🍚 দুপুর হয়েছে—খাওয়া, বিশ্রাম ও "
-            "প্রয়োজনীয় কাজের সময় ঠিক রাখুন।\n\n"
+        parts.append(
+            random.choice([
+                "🍚 দুপুর হয়েছে—সময়মতো খাবার খান এবং পানি পান করুন। 💧",
+
+                "🍛 দুপুরের খাবার খেয়ে নিন। খালি পেটে বেশি কাজ করবেন না। 😊",
+
+                "🥗 Lunch time! ভালোভাবে খাবার খান এবং একটু বিশ্রাম নিন। ❤️",
+            ])
+        )
+
+    if hour == 15:
+
+        parts.append(
+            "☕ বিকেলের দিকে একটু পানি/চা খেয়ে শরীরটাকে ফ্রেশ করে নিন। 😊"
         )
 
     if hour == 18:
 
-        text += (
-            "🌇 সন্ধ্যা হয়েছে। নামাজ ও পরিবারের "
-            "জন্য কিছু সময় রাখুন।\n\n"
+        parts.append(
+            "🌇 সন্ধ্যা হয়েছে। পরিবারের সাথে কিছু সময় কাটান এবং নামাজের কথা মনে রাখুন। 🕌❤️"
         )
 
-    if (
-        hour not in STUDY_HOURS
-        and hour not in SPORTS_HOURS
-        and hour not in WORK_HOURS
-        and hour != SLEEP_HOUR
-        and hour != WAKE_HOUR
-    ):
+    if hour == 20:
 
-        text += (
-            "✅ আপনার কাজের তালিকা দেখে "
-            "পরের এক ঘণ্টার লক্ষ্য ঠিক করুন।"
+        parts.append(
+            "🍽️ রাতের খাবারের সময় কাছাকাছি—সময়মতো খাবার খেয়ে নিন। 😊"
         )
 
-    return text
+    if hour == SLEEP_HOUR:
+
+        parts.append(
+            random.choice([
+                "😴 **ঘুমানোর সময়!**\n"
+                "সময়মতো ঘুমান এবং শরীর ও মনকে বিশ্রাম দিন। 🌙",
+
+                "🌙 রাত বেশি করবেন না। ফোনটা পাশে রেখে ঘুমিয়ে পড়ুন। 😴❤️",
+
+                "😴 আজকের কাজ শেষ। এখন বিশ্রামের সময়—শুভ রাত্রি। 🌙✨",
+            ])
+        )
+
+    if hour == 22:
+
+        parts.append(
+            "🌙 ঘুমানোর প্রস্তুতি নিন—আগামীকাল ফ্রেশ থাকতে ভালো ঘুম দরকার। 😴"
+        )
+
+    if len(parts) == 1:
+
+        parts.append(
+            random.choice([
+                "✅ আপনার কাজের তালিকা দেখে পরের এক ঘণ্টার লক্ষ্য ঠিক করুন। 🎯",
+
+                "💧 একটু পানি পান করুন এবং নিজের খেয়াল রাখুন। 😊",
+
+                "🌟 সময় চলে যাচ্ছে—আজকের ছোট একটি কাজ এখনই শেষ করে ফেলুন। 💪",
+
+                "🧠 কয়েক মিনিট নিজের জন্য রাখুন। তারপর আবার কাজে ফিরুন। ❤️",
+            ])
+        )
+
+    return "\n\n".join(
+        parts
+    )
+
+# ============================================================================
+# SEND AUTOMATIC MESSAGE
+# ============================================================================
 
 
 async def send_to_enabled_chats(
@@ -2343,6 +2705,10 @@ async def send_to_enabled_chats(
             )
 
             sent += 1
+
+            await asyncio.sleep(
+                0.05
+            )
 
         except Exception as e:
 
@@ -2438,7 +2804,10 @@ async def send_prayer_notifications(
                 f"{today}_{key}"
             )
 
-            if get_state(state_key) == "1":
+            if get_state(
+                state_key
+            ) == "1":
+
                 continue
 
             set_state(
@@ -2446,10 +2815,18 @@ async def send_prayer_notifications(
                 "1"
             )
 
+            caption = random.choice(
+                PRAYER_CAPTIONS.get(
+                    key,
+                    [
+                        f"🕌 এখন {label} নামাজের সময় হয়েছে। সবাই নামাজ পড়ে নিন। 🤲"
+                    ]
+                )
+            )
+
             text = (
-                f"🕌 **{label} নামাজের সময় হয়েছে**\n\n"
-                f"⏰ সময়: **{value}**\n"
-                "🤲 নামাজ আদায়ের জন্য প্রস্তুত হোন।"
+                f"{caption}\n\n"
+                f"⏰ সময়: **{value}**"
             )
 
             sent = await send_to_enabled_chats(
@@ -2458,8 +2835,7 @@ async def send_prayer_notifications(
             )
 
             logger.info(
-                "Prayer notification %s sent "
-                "to %s chats.",
+                "Prayer notification %s sent to %s chats.",
                 label,
                 sent
             )
@@ -2470,11 +2846,7 @@ async def automatic_notification_loop(
 ):
 
     logger.info(
-        "Automatic notifications started. "
-        "Study=%s Sports=%s Sleep=%s",
-        STUDY_HOURS,
-        SPORTS_HOURS,
-        SLEEP_HOUR,
+        "Automatic notifications started."
     )
 
     while True:
@@ -2483,7 +2855,9 @@ async def automatic_notification_loop(
 
             if AUTO_MESSAGES_ENABLED:
 
-                now = datetime.now(TZ)
+                now = datetime.now(
+                    TZ
+                )
 
                 if now.minute == 0:
 
@@ -2497,7 +2871,9 @@ async def automatic_notification_loop(
                     now
                 )
 
-            await asyncio.sleep(20)
+            await asyncio.sleep(
+                20
+            )
 
         except asyncio.CancelledError:
 
@@ -2514,44 +2890,657 @@ async def automatic_notification_loop(
                 e
             )
 
-            await asyncio.sleep(20)
+            await asyncio.sleep(
+                20
+            )
 
 # ============================================================================
-# Helpers
+# FAST SMART REPLY ENGINE
 # ============================================================================
 
 
-user_last_action = {}
+SMART_REPLY_RULES = [
+
+    # --------------------------------------------------------
+    # Creator
+    # --------------------------------------------------------
+
+    (
+        [
+            "তোমাকে কে তৈরি",
+            "তোমাকে কে বানাইছে",
+            "তোমাকে কে বানিয়েছে",
+            "কে তোমাকে বানিয়েছে",
+            "কে বানাইছে তোমাকে",
+            "তোমার creator কে",
+            "creator কে",
+            "who created you",
+            "who made you",
+            "তোমার বস কে",
+            "তোমার boss কে",
+            "কে তোমার boss",
+        ],
+        [
+            "🤖 আমাকে আমার Boss, TOMAL CHOWDHURY তৈরি করছে। 👑\n"
+            "আমার Boss-এর Username: @tomalchowdhury2 ❤️",
+
+            "😎 আমার Boss হলো TOMAL CHOWDHURY। 👑\n"
+            "আমি Boss-এর কথা শুনি। 😄\n"
+            "Boss: @tomalchowdhury2",
+
+            "🤖 আমার পেছনে যে মানুষটা কাজ করছে তিনি হলেন "
+            "TOMAL CHOWDHURY। 👑🔥\n"
+            "Username: @tomalchowdhury2",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Home / location
+    # --------------------------------------------------------
+
+    (
+        [
+            "তুমি কোথায় থাকো",
+            "তুমি কই থাকো",
+            "তোমার বাসা কোথায়",
+            "তোমার বাড়ি কোথায়",
+            "তোমার home কোথায়",
+            "where do you live",
+            "where is your home",
+            "তুমি কোথায় থাক",
+        ],
+        [
+            "🏠 আমার কোনো বাসা নেই, আমি আমার user name, "
+            "TOMAL CHOWDHURY বসের সাথে থাকি এবং বসের কথা শুনি। 😎\n"
+            "👑 Boss: @tomalchowdhury2",
+
+            "🤖 আমার নিজের কোনো বাড়ি নেই। 😄\n"
+            "আমি আমার Boss TOMAL CHOWDHURY-এর সাথে থাকি "
+            "এবং Boss-এর কথা শুনি। 👑\n"
+            "@tomalchowdhury2",
+
+            "🏠 আমার ঠিকানা হলো—আমার Boss TOMAL CHOWDHURY-এর "
+            "সাথে! 😎👑\n"
+            "Boss Username: @tomalchowdhury2",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Stop / apology
+    # --------------------------------------------------------
+
+    (
+        [
+            "থামো তুমি",
+            "থাম তুমি",
+            "চুপ কর",
+            "চুপ করো",
+            "stop",
+            "shut up",
+            "থাম",
+        ],
+        [
+            "আচ্ছা আচ্ছা 😅 থেমে গেলাম। 🤐❤️",
+            "ওকে Boss 😅🤐 আর বলছি না।",
+            "ঠিক আছে 😔🙏 আমি চুপ থাকছি।",
+            "আচ্ছা ভাই 😄✋ এখন শান্ত!",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Greeting
+    # --------------------------------------------------------
+
+    (
+        [
+            "হ্যালো",
+            "হ্যালো ভাই",
+            "hello",
+            "hi",
+            "hey",
+            "আসসালামু আলাইকুম",
+            "সালাম",
+            "কেমন আছ",
+            "কেমন আছো",
+            "কি খবর",
+        ],
+        [
+            "ওয়ালাইকুম আসসালাম! 😊❤️ কেমন আছেন?",
+            "হ্যালো! 👋😊 আমি আছি, আপনার কথা শুনছি।",
+            "আলহামদুলিল্লাহ 🤍 আমি ভালো আছি। আপনার কী খবর?",
+            "হাই! 😎🔥 বলুন, কী করতে পারি?",
+            "ওয়ালাইকুম আসসালাম 🌙❤️ বলুন ভাই, কী লাগবে?",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Thanks
+    # --------------------------------------------------------
+
+    (
+        [
+            "ধন্যবাদ",
+            "থ্যাংকস",
+            "thanks",
+            "thank you",
+            "অনেক ধন্যবাদ",
+        ],
+        [
+            "স্বাগতম! 😊❤️",
+            "আপনাকে স্বাগতম ভাই। 🤝😊",
+            "যখন দরকার ডাকবেন। 😎❤️",
+            "কোনো সমস্যা নেই! 🤗✨",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Rain
+    # --------------------------------------------------------
+
+    (
+        [
+            "আজ বৃষ্টি হচ্ছে",
+            "আজকে বৃষ্টি হচ্ছে",
+            "বৃষ্টি হচ্ছে",
+            "বৃষ্টি নামছে",
+            "আজ বৃষ্টি",
+            "বৃষ্টি",
+            "rain",
+        ],
+        [
+            "🌧️ দারুণ! আজকে প্রিয় মানুষের সাথে বৃষ্টিতে ভিজতে পারলে ভালো লাগতো। ❤️☔",
+
+            "🌧️ আজ বৃষ্টি! ☔ এক কাপ চা আর প্রিয় মানুষের সঙ্গ হলে একদম জমে যেত। ❤️☕",
+
+            "আহা বৃষ্টি! 🌧️☔ আজকের আবহাওয়াটা একদম রোমান্টিক। 😄❤️",
+
+            "🌧️ বৃষ্টি মানেই অন্যরকম একটা অনুভূতি। নিরাপদে থাকুন আর বৃষ্টিটা উপভোগ করুন। ☔😊",
+
+            "আজ আকাশও মনে হয় প্রেমে পড়েছে! 😂🌧️❤️",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Heat
+    # --------------------------------------------------------
+
+    (
+        [
+            "আজ অনেক গরম",
+            "আজকে অনেক গরম",
+            "অনেক গরম",
+            "গরম প্রচুর",
+            "আজ গরম",
+            "গরম লাগছে",
+            "গরম লাগতেছে",
+            "খুব গরম",
+            "hot",
+            "heat",
+        ],
+        [
+            "☀️ হ্যাঁ আজকে গরম প্রচুর! তাই সবাই ঠাণ্ডা স্থানে থাকুন এবং লেবুর শরবত খান। 🍋🥤❤️",
+
+            "🥵 গরম তো বেশিই! পানি বেশি পান করুন, রোদ এড়িয়ে চলুন। 💧☀️",
+
+            "☀️🥵 আজকের গরমে বাইরে গেলে পানি সঙ্গে রাখবেন। লেবুর শরবত হলে আরও ভালো! 🍋🥤",
+
+            "আহা কী গরম! 🥵❄️ একটু ঠাণ্ডা জায়গায় বসুন আর পানি পান করুন। 💧",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Winter / cold
+    # --------------------------------------------------------
+
+    (
+        [
+            "অনেক শীত",
+            "আজ অনেক শীত",
+            "আজকে শীত",
+            "শীত পড়ছে",
+            "শীত লাগছে",
+            "খুব ঠান্ডা",
+            "ঠান্ডা লাগছে",
+            "শীত",
+            "winter",
+        ],
+        [
+            "❄️🥶 কম্বল গায়ে দাও আর প্রিয় মানুষটাকে জড়িয়ে ধরে ঘুমাও। 😴❤️",
+
+            "🥶❄️ শীত বেশি হলে গরম কাপড় পরুন আর কম্বলটা শক্ত করে ধরুন। 😂🧣",
+
+            "❄️ আজ তো কম্বল ছাড়া চলবে না! 😴🛌 গরম থাকুন ভাই। ❤️",
+
+            "🥶☕ শীতের দিনে গরম চা + কম্বল = শান্তি! ☕🧣❤️",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Bathing
+    # --------------------------------------------------------
+
+    (
+        [
+            "গোসল করবো না",
+            "গোসল করব না",
+            "আজ গোসল করবো না",
+            "আজ গোসল করব না",
+            "গোসল করবো না আজ",
+            "গোসল করব না আজ",
+        ],
+        [
+            "😂 দোস্ত, কত দিন ধরে গোসল করছ না? 🛁🤣 আজকে কিন্তু গোসল করো!",
+
+            "🤣 ভাই, পানি তোমার কী দোষ করেছে? 🛁😂 যাও, গোসল করে আসো!",
+
+            "😳 গোসল বাদ দিলে কিন্তু মানুষ না, ইতিহাস হয়ে যাবে! 😂🛁",
+
+            "🛁😂 আজ গোসল না করলে কালকে তোমার আশেপাশের মানুষই নোটিফিকেশন দেবে! 🤣",
+        ]
+    ),
+
+    (
+        [
+            "গোসল",
+            "গোসল করতে",
+            "গোসল করার সময়",
+            "bath",
+            "bathing",
+        ],
+        [
+            "🛁 গোসলের সময় হলে এখনই করে ফেলুন। পরে করলে আলসেমি এসে যাবে। 😄",
+            "🚿🛁 ফ্রেশ হয়ে নিন ভাই, মনটাও ভালো হয়ে যাবে। 😊",
+            "🧼🚿 একটু ফ্রেশ হয়ে আসুন—তারপর আবার কাজ/আড্ডা। 😎",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Sleep
+    # --------------------------------------------------------
+
+    (
+        [
+            "ঘুমাব",
+            "ঘুমাবো",
+            "ঘুমাতে যাব",
+            "ঘুমাতে যাচ্ছি",
+            "ঘুমানোর সময়",
+            "ঘুমাব এখন",
+            "ঘুমাবো এখন",
+            "ঘুম",
+            "sleep",
+        ],
+        [
+            "😴🌙 ঘুমের সময় হলে ফোনটা পাশে রেখে আরামে ঘুমান। শুভ রাত্রি। ❤️",
+
+            "🌙😴 ভালো করে ঘুমান। কালকে নতুন দিন, নতুন কাজ। 💪❤️",
+
+            "😂 ফোনটা নামাও ভাই, TikTok/Telegram আর কত? এখন ঘুম! 😴📱",
+
+            "🌙💤 চোখ বন্ধ করুন, চিন্তা কমান, ঘুমিয়ে পড়ুন। ❤️😴",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Food
+    # --------------------------------------------------------
+
+    (
+        [
+            "খাব",
+            "খাবো",
+            "খেতে বসছি",
+            "খেতে যাব",
+            "খাবার সময়",
+            "খাওয়ার সময়",
+            "খিদা লাগছে",
+            "ক্ষুধা লাগছে",
+            "খাবার",
+            "খাওয়া",
+        ],
+        [
+            "🍚😋 সময়মতো খাবার খেয়ে নিন। খালি পেটে বেশি সময় থাকবেন না। ❤️",
+
+            "🍛 ক্ষুধা লাগলে আর দেরি কেন? খেয়ে নিন ভাই! 😄🍽️",
+
+            "🍚❤️ খাবার আগে হাত ধুয়ে নিন, তারপর শান্তিতে খাবার খান। 😊",
+
+            "😋🍽️ খাওয়ার সময় ফোনটা একটু পাশে রাখলে খাবারটাও ভালোভাবে উপভোগ করতে পারবেন।",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Cooking
+    # --------------------------------------------------------
+
+    (
+        [
+            "রান্না করবো",
+            "রান্না করব",
+            "রান্না করছি",
+            "রান্না করার সময়",
+            "রান্না",
+            "cooking",
+            "cook কর",
+        ],
+        [
+            "👨‍🍳🔥 রান্নার সময় সাবধানে কাজ করুন। আজ কী রান্না হচ্ছে? 😋",
+
+            "🍳😋 রান্নার গন্ধ কিন্তু এখান পর্যন্ত আসছে মনে হচ্ছে! 😂❤️",
+
+            "👨‍🍳🍲 রান্না সুন্দর হোক! লবণ যেন বেশি না হয় কিন্তু। 😂",
+
+            "🔥🍳 Chef mode ON! 😎👨‍🍳",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Study
+    # --------------------------------------------------------
+
+    (
+        [
+            "পড়তে বসছি",
+            "পড়াশোনা করব",
+            "পড়াশোনা করছি",
+            "পড়ার সময়",
+            "পড়তে হবে",
+            "স্টাডি",
+            "study",
+            "exam",
+            "পরীক্ষা",
+        ],
+        [
+            "📚🔥 মন দিয়ে পড়ুন ভাই। আজকের পড়া আজই শেষ করুন। 💪",
+
+            "📖🎯 ফোনটা একটু দূরে রাখুন, ৩০ মিনিট মন দিয়ে পড়ুন। তারপর বিরতি। 😊",
+
+            "🎓📚 অল্প অল্প করে নিয়মিত পড়লেই বড় ফল আসে। Keep going! 💪",
+
+            "📝🔥 পরীক্ষার ভয় না পেয়ে আজকের কাজটা আজই শেষ করুন। ❤️",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Work
+    # --------------------------------------------------------
+
+    (
+        [
+            "কাজ করতে বসছি",
+            "কাজ করছি",
+            "কাজের সময়",
+            "অফিসে যাচ্ছি",
+            "অফিস",
+            "কাজ করতে হবে",
+            "work",
+        ],
+        [
+            "💼🔥 কাজটা একবারে এক ধাপ করে করুন। আপনি পারবেন! 💪",
+
+            "💻🎯 আগে সবচেয়ে জরুরি কাজটা শেষ করুন। তারপর বাকিগুলো।",
+
+            "💼😊 কাজের মাঝে ছোট বিরতি নিতে ভুলবেন না।",
+
+            "🔥💪 কাজ শুরু হয়ে গেলে ফোনের distraction একটু কমিয়ে দিন।",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Sports
+    # --------------------------------------------------------
+
+    (
+        [
+            "খেলতে যাব",
+            "খেলতে যাচ্ছি",
+            "খেলা",
+            "ক্রিকেট খেলব",
+            "ফুটবল খেলব",
+            "sports",
+        ],
+        [
+            "🏏🔥 খেলতে যান, শরীরটাও ফিট থাকবে! 💪😊",
+
+            "⚽😎 খেলা হোক জমজমাট! তবে পানি সঙ্গে রাখবেন। 💧",
+
+            "🏆🔥 আজকে জয় আপনারই হোক! 💪😄",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Fighting
+    # --------------------------------------------------------
+
+    (
+        [
+            "ঝগড়া করব",
+            "ঝগড়া করছি",
+            "মারামারি",
+            "মারামারি করব",
+            "লড়াই করব",
+            "ফাইট করব",
+            "fight",
+            "ঝামেলা করব",
+        ],
+        [
+            "🕊️❤️ ঝগড়া না করে শান্তভাবে কথা বলুন। রাগের সময় নেওয়া সিদ্ধান্ত পরে আফসোস হতে পারে।",
+
+            "🤝 শান্ত হন ভাই। মারামারি করে কোনো লাভ নেই—কথা বলে সমাধান করুন। ❤️",
+
+            "😌✋ আগে শান্ত হন, পানি খান, তারপর কথা বলুন। ঝগড়া বাদ! ❤️",
+
+            "🕊️ মানুষের সাথে সম্পর্ক জেতা ভালো, ঝগড়া জেতা নয়। ❤️",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Love
+    # --------------------------------------------------------
+
+    (
+        [
+            "ভালোবাসি",
+            "আমি তোমাকে ভালোবাসি",
+            "তোমাকে ভালোবাসি",
+            "love you",
+            "i love you",
+        ],
+        [
+            "😂❤️ আমি তো AI ভাই, তবে আপনার ভালোবাসার সম্মান রাখলাম! 🤖❤️",
+
+            "🥹❤️ এত ভালোবাসা কোথায় রাখি বলুন তো! 😄",
+
+            "🤖❤️ আপনার ভালোবাসা গ্রহণ করলাম—Boss-এর অনুমতি লাগবে না তো? 😂👑",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Sad
+    # --------------------------------------------------------
+
+    (
+        [
+            "মন খারাপ",
+            "মনটা খারাপ",
+            "খারাপ লাগছে",
+            "দুঃখ লাগছে",
+            "sad",
+            "depressed",
+        ],
+        [
+            "🥺❤️ মন খারাপ হলে একা থাকবেন না। কাছের কারও সাথে কথা বলুন।",
+
+            "🫂❤️ সব দিন একরকম যায় না। খারাপ সময়ও একসময় চলে যায়।",
+
+            "🌿❤️ একটু বাইরে হাঁটুন, পানি পান করুন, আর নিজের যত্ন নিন।",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Happy
+    # --------------------------------------------------------
+
+    (
+        [
+            "অনেক খুশি",
+            "খুশি লাগছে",
+            "আজ ভালো লাগছে",
+            "happy",
+            "ভালো লাগছে",
+        ],
+        [
+            "🥳❤️ এই তো চাই! আপনার খুশিটা এমনই থাকুক।",
+
+            "😄🔥 আজকে তাহলে আনন্দের দিন! উপভোগ করুন ভাই।",
+
+            "🎉😊 ভালো লাগলে কারণটা মনে রাখবেন—খারাপ দিনে কাজে লাগবে। ❤️",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Bored
+    # --------------------------------------------------------
+
+    (
+        [
+            "বোর লাগছে",
+            "boring",
+            "bored",
+            "বোর হচ্ছি",
+            "কিছু ভালো লাগছে না",
+        ],
+        [
+            "😂🎬 একটা নাটক দেখবেন? Category থেকে পছন্দ করে নিন।",
+
+            "😎🔥 বোরিং বাদ! গান, নাটক, মুভি—কী চাই বলুন।",
+
+            "🎵😄 একটা গান শুনুন, তারপর একটু হাঁটাহাঁটি করুন।",
+        ]
+    ),
+
+    # --------------------------------------------------------
+    # Thank / compliment
+    # --------------------------------------------------------
+
+    (
+        [
+            "তুমি ভালো",
+            "তুমি অনেক ভালো",
+            "বটটা ভালো",
+            "nice bot",
+            "good bot",
+        ],
+        [
+            "🥹❤️ ধন্যবাদ ভাই! Boss শুনলে খুশি হবে। 👑",
+
+            "😎🔥 ধন্যবাদ! আমি তো Boss-এর শেখানো কথা শুনি। 👑",
+            "🤖❤️ আপনার ভালো লাগলেই আমার কাজ সফল।",
+        ]
+    ),
+]
 
 
-def check_rate_limit(
-    user_id,
-    interval=0.7
+def smart_everyday_reply(
+    text
 ):
 
-    current = time.time()
-
-    last = user_last_action.get(
-        user_id,
-        0
+    norm = normalize_text(
+        text
     )
 
-    if current - last < interval:
-        return False
+    if not norm:
+        return None
 
-    user_last_action[
-        user_id
-    ] = current
+    # Rules are ordered intentionally.
+    for patterns, replies in SMART_REPLY_RULES:
 
-    return True
+        for pattern in patterns:
+
+            p = normalize_text(
+                pattern
+            )
+
+            if not p:
+                continue
+
+            if p in norm:
+
+                return random.choice(
+                    replies
+                )
+
+    return None
+
+# ============================================================================
+# ADMIN HELP
+# ============================================================================
 
 
 def is_admin(user_id):
 
     return user_id in ADMIN_IDS
 
+
+async def handle_admin_help(
+    message,
+    context,
+    user,
+    text
+):
+
+    norm = normalize_text(
+        text
+    )
+
+    help_words = [
+        "এডমিন চাই",
+        "অ্যাডমিন চাই",
+        "admin help",
+        "এডমিনের সাথে",
+        "সমস্যা হয়েছে",
+        "অভিযোগ",
+        "admin contact",
+        "contact admin",
+    ]
+
+    if any(
+        w in norm
+        for w in help_words
+    ):
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "💬 এডমিন @"
+                    + ADMIN_USERNAME
+                    + "-কে মেসেজ দিন",
+                    url=(
+                        f"https://t.me/"
+                        f"{ADMIN_USERNAME}"
+                    )
+                )
+            ]
+        ])
+
+        await message.reply_text(
+            f"👑 এডমিনের সাথে যোগাযোগ: "
+            f"@{ADMIN_USERNAME}",
+            reply_markup=keyboard
+        )
+
+        await notify_admin_user_help(
+            context.bot,
+            user,
+            text
+        )
+
+        return True
+
+    return False
+
 # ============================================================================
-# Commands
+# COMMANDS
 # ============================================================================
 
 
@@ -2592,6 +3581,10 @@ async def start_command(
             InlineKeyboardButton(
                 "🌤️ আবহাওয়া",
                 callback_data="show_weather"
+            ),
+            InlineKeyboardButton(
+                "🕌 নামাজ",
+                callback_data="show_prayer"
             )
         ],
         [
@@ -2608,21 +3601,24 @@ async def start_command(
 
     await update.effective_message.reply_text(
         f"👋 আসসালামু আলাইকুম "
-        f"**{user.first_name}**!\n\n"
-        "আমি আপনার **AI Telegram Bot**।\n\n"
+        f"{user.first_name}!\n\n"
+        "আমি আপনার AI Telegram Bot। 🤖\n\n"
         "✨ যেকোনো প্রশ্ন করতে পারেন।\n"
-        "🎬 নাটক/গান/ভিডিওর নাম লিখে "
-        "খুঁজতে পারেন।\n"
-        "📂 অথবা Category-এর নাম লিখুন।\n\n"
+        "🎬 নাটক/গান/ভিডিওর নাম লিখে খুঁজতে পারেন।\n"
+        "📂 Category-এর নাম লিখুন।\n"
+        "💬 সাধারণ কথাও বলতে পারেন।\n\n"
         "উদাহরণ:\n"
         "• নাটক\n"
         "• নাটক দেন\n"
+        "• গান দেও\n"
         "• শীত\n"
         "• শীতের ভিডিও দেখাও\n"
-        "• ক্রিকেট আছে?\n\n"
-        "💡 যা জানতে চান সরাসরি লিখুন।",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        "• ক্রিকেট আছে?\n"
+        "• আজ অনেক গরম\n"
+        "• আজ বৃষ্টি হচ্ছে\n\n"
+        f"👑 Boss: {BOSS_NAME}\n"
+        f"📱 {BOSS_USERNAME}",
+        reply_markup=keyboard
     )
 
 
@@ -2632,20 +3628,18 @@ async def help_command(
 ):
 
     await update.effective_message.reply_text(
-        "📖 **বটের ব্যবহারবিধি:**\n\n"
-        "1. যেকোনো প্রশ্ন লিখুন → AI উত্তর দেবে।\n"
-        "2. Category-এর নাম লিখুন → সেই Category দেখাবে।\n"
-        "3. নাটক/গান/ভিডিওর নাম লিখুন → "
-        "ডেটাবেজে থাকলে পাঠাবে।\n"
-        "4. /trending → ট্রেন্ডিং কন্টেন্ট\n"
-        "5. /weather → আবহাওয়া\n"
-        "6. /prayer → নামাজের সময়\n"
-        "7. /categories → সব Category\n"
-        "8. /auto_on → অটো নোটিফিকেশন চালু\n"
-        "9. /auto_off → অটো নোটিফিকেশন বন্ধ\n\n"
-        "👑 প্রধান অ্যাডমিন: "
-        f"@{ADMIN_USERNAME}",
-        parse_mode=ParseMode.MARKDOWN
+        "📖 বটের ব্যবহারবিধি:\n\n"
+        "1️⃣ যেকোনো প্রশ্ন লিখুন → AI উত্তর দেবে।\n"
+        "2️⃣ Category-এর নাম লিখুন → সেই Category দেখাবে।\n"
+        "3️⃣ নাটক/গান/ভিডিওর নাম লিখুন → DB-তে থাকলে পাঠাবে।\n"
+        "4️⃣ /trending → ট্রেন্ডিং কন্টেন্ট\n"
+        "5️⃣ /weather → আবহাওয়া\n"
+        "6️⃣ /prayer → নামাজের সময়\n"
+        "7️⃣ /categories → সব Category\n"
+        "8️⃣ /auto_on → অটো নোটিফিকেশন চালু\n"
+        "9️⃣ /auto_off → অটো নোটিফিকেশন বন্ধ\n\n"
+        f"👑 Boss: {BOSS_NAME}\n"
+        f"📱 {BOSS_USERNAME}"
     )
 
 
@@ -2667,11 +3661,10 @@ async def contact_command(
     ])
 
     await update.effective_message.reply_text(
-        f"👑 **এডমিন যোগাযোগ**\n\n"
+        f"👑 এডমিন যোগাযোগ\n\n"
         f"@{ADMIN_USERNAME}\n"
-        f"ID: `{ADMIN_IDS[0]}`",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        f"ID: {ADMIN_IDS[0]}",
+        reply_markup=keyboard
     )
 
 
@@ -2685,22 +3678,19 @@ async def admin_panel_command(
     ):
 
         await update.effective_message.reply_text(
-            "⛔ এই কমান্ডটি শুধুমাত্র "
-            "এডমিনের জন্য।"
+            "⛔ এই কমান্ডটি শুধুমাত্র এডমিনের জন্য।"
         )
 
         return
 
     await update.effective_message.reply_text(
-        f"👑 **এডমিন প্যানেল "
-        f"(@{ADMIN_USERNAME})**\n\n"
-        "📥 ভিডিও/অডিও/ছবি পাঠান → "
-        "Title → Category → DB Save হবে।\n\n"
+        f"👑 এডমিন প্যানেল (@{ADMIN_USERNAME})\n\n"
+        "📥 ভিডিও/অডিও/ছবি পাঠান → Title → Category → DB Save হবে।\n\n"
         "📂 Category Management:\n"
         "/categories - Category list\n"
         "/addcategory - নতুন Category\n"
         "/editcategory - Category edit\n"
-        "/delcategory - Category delete\n\n"
+        "/delcategory - Category বন্ধ\n\n"
         "📚 Content:\n"
         "/list - কন্টেন্ট তালিকা\n"
         "/stats - পরিসংখ্যান\n"
@@ -2708,8 +3698,7 @@ async def admin_panel_command(
         "🔔 Notification:\n"
         "/auto_on\n"
         "/auto_off\n"
-        "/notify_test",
-        parse_mode=ParseMode.MARKDOWN
+        "/notify_test"
     )
 
 
@@ -2722,7 +3711,6 @@ async def categories_command(
         update.effective_user.id
     ):
 
-        # User-দেরও category list দেখানো যাবে
         text, markup = category_prompt(
             prefix="usercat",
             page=0,
@@ -2731,8 +3719,7 @@ async def categories_command(
 
         await update.effective_message.reply_text(
             text,
-            reply_markup=markup,
-            parse_mode=ParseMode.MARKDOWN
+            reply_markup=markup
         )
 
         return
@@ -2750,7 +3737,7 @@ async def categories_command(
         return
 
     lines = [
-        "📂 **Category List**\n"
+        "📂 Category List\n"
     ]
 
     for index, row in enumerate(
@@ -2766,13 +3753,12 @@ async def categories_command(
 
         lines.append(
             f"{index}. {status} "
-            f"`{row['key']}` → "
+            f"{row['key']} → "
             f"{row['label']}"
         )
 
     await update.effective_message.reply_text(
-        "\n".join(lines)[:4000],
-        parse_mode=ParseMode.MARKDOWN
+        "\n".join(lines)[:4000]
     )
 
 
@@ -2848,7 +3834,9 @@ async def addcategory_command(
     )
 
     next_order = (
-        (max_row["m"] or 0) + 1
+        (
+            max_row["m"] or 0
+        ) + 1
         if max_row
         else 1
     )
@@ -2875,11 +3863,10 @@ async def addcategory_command(
     )
 
     await update.effective_message.reply_text(
-        "✅ **নতুন Category যোগ হয়েছে।**\n\n"
-        f"🔑 Key: `{key}`\n"
+        "✅ নতুন Category যোগ হয়েছে।\n\n"
+        f"🔑 Key: {key}\n"
         f"🏷️ Label: {label}\n"
-        f"🔎 Alias: {aliases}",
-        parse_mode=ParseMode.MARKDOWN
+        f"🔎 Alias: {aliases}"
     )
 
 
@@ -2897,10 +3884,7 @@ async def editcategory_command(
 
         await update.effective_message.reply_text(
             "ব্যবহার:\n"
-            "/editcategory key | নতুন label | নতুন aliases\n\n"
-            "উদাহরণ:\n"
-            "/editcategory winter | ❄️ শীতের ভিডিও | "
-            "শীত,শীতের ভিডিও,winter"
+            "/editcategory key | নতুন label | নতুন aliases"
         )
 
         return
@@ -2919,7 +3903,6 @@ async def editcategory_command(
     )
 
     label = parts[1]
-
     aliases = parts[2]
 
     row = get_category(
@@ -2929,8 +3912,7 @@ async def editcategory_command(
     if not row:
 
         await update.effective_message.reply_text(
-            "❌ এই Category পাওয়া যায়নি।\n"
-            "আগে /categories দিয়ে key দেখুন।"
+            "❌ এই Category পাওয়া যায়নি।"
         )
 
         return
@@ -2939,7 +3921,8 @@ async def editcategory_command(
         """
         UPDATE categories
         SET label=?,
-            aliases=?
+            aliases=?,
+            active=1
         WHERE key=?
         """,
         (
@@ -2950,11 +3933,10 @@ async def editcategory_command(
     )
 
     await update.effective_message.reply_text(
-        "✅ **Category Edit হয়েছে।**\n\n"
-        f"🔑 Key: `{key}`\n"
+        "✅ Category Edit হয়েছে।\n\n"
+        f"🔑 Key: {key}\n"
         f"🏷️ Label: {label}\n"
-        f"🔎 Alias: {aliases}",
-        parse_mode=ParseMode.MARKDOWN
+        f"🔎 Alias: {aliases}"
     )
 
 
@@ -2972,9 +3954,7 @@ async def delcategory_command(
 
         await update.effective_message.reply_text(
             "ব্যবহার:\n"
-            "/delcategory <key>\n\n"
-            "উদাহরণ:\n"
-            "/delcategory winter"
+            "/delcategory <key>"
         )
 
         return
@@ -2995,8 +3975,6 @@ async def delcategory_command(
 
         return
 
-    # Existing content is not deleted.
-    # Category is only disabled.
     db_execute(
         """
         UPDATE categories
@@ -3008,10 +3986,9 @@ async def delcategory_command(
 
     await update.effective_message.reply_text(
         "✅ Category বন্ধ করা হয়েছে।\n\n"
-        f"📂 `{key}`\n\n"
+        f"📂 {key}\n\n"
         "এই Category-এর পুরোনো content "
-        "ডিলিট করা হয়নি।",
-        parse_mode=ParseMode.MARKDOWN
+        "ডিলিট করা হয়নি।"
     )
 
 
@@ -3049,7 +4026,7 @@ async def list_command(
         return
 
     lines = [
-        "📚 **সংরক্ষিত কন্টেন্ট:**\n"
+        "📚 সংরক্ষিত কন্টেন্ট:\n"
     ]
 
     labels = get_category_labels()
@@ -3062,15 +4039,14 @@ async def list_command(
         )
 
         lines.append(
-            f"🆔 `{r['id']}` | "
-            f"🎬 **{r['title']}** | "
+            f"🆔 {r['id']} | "
+            f"🎬 {r['title']} | "
             f"📁 {label} | "
             f"👁️ {r['views']}"
         )
 
     await update.effective_message.reply_text(
-        "\n".join(lines)[:4000],
-        parse_mode=ParseMode.MARKDOWN
+        "\n".join(lines)[:4000]
     )
 
 
@@ -3087,8 +4063,7 @@ async def delete_command(
     if not context.args:
 
         await update.effective_message.reply_text(
-            "ব্যবহার: `/delete <ID>`",
-            parse_mode=ParseMode.MARKDOWN
+            "ব্যবহার: /delete <ID>"
         )
 
         return
@@ -3105,8 +4080,7 @@ async def delete_command(
         )
 
         await update.effective_message.reply_text(
-            f"✅ ID `{cid}` ডিলিট হয়েছে।",
-            parse_mode=ParseMode.MARKDOWN
+            f"✅ ID {cid} ডিলিট হয়েছে।"
         )
 
     except Exception as e:
@@ -3153,13 +4127,12 @@ async def stats_command(
     )["c"]
 
     await update.effective_message.reply_text(
-        f"📊 **বট স্ট্যাটিস্টিক্স**\n\n"
-        f"👤 ইউজার: **{u}**\n"
-        f"💬 চ্যাট: **{chats}**\n"
-        f"🎬 কন্টেন্ট: **{c}**\n"
-        f"📂 Active Category: **{cats}**\n"
-        f"👁️ ভিউ: **{v}**",
-        parse_mode=ParseMode.MARKDOWN
+        f"📊 বট স্ট্যাটিস্টিক্স\n\n"
+        f"👤 ইউজার: {u}\n"
+        f"💬 চ্যাট: {chats}\n"
+        f"🎬 কন্টেন্ট: {c}\n"
+        f"📂 Active Category: {cats}\n"
+        f"👁️ ভিউ: {v}"
     )
 
 
@@ -3214,8 +4187,7 @@ async def notify_test_command(
     await update.effective_message.reply_text(
         hourly_message(
             datetime.now(TZ).hour
-        ),
-        parse_mode=ParseMode.MARKDOWN
+        )
     )
 
 
@@ -3224,7 +4196,9 @@ async def trending_command(
     context
 ):
 
-    items = get_top_trending(10)
+    items = get_top_trending(
+        10
+    )
 
     if not items:
 
@@ -3252,12 +4226,11 @@ async def trending_command(
         ])
 
     await update.effective_message.reply_text(
-        "🔥 **ট্রেন্ডিং কন্টেন্ট:**\n\n"
+        "🔥 ট্রেন্ডিং কন্টেন্ট:\n\n"
         "যেটি চান সেটি নির্বাচন করুন।",
         reply_markup=InlineKeyboardMarkup(
             buttons
-        ),
-        parse_mode=ParseMode.MARKDOWN
+        )
     )
 
 
@@ -3289,7 +4262,7 @@ async def prayer_command(
     )
 
 # ============================================================================
-# Callback Queries
+# CALLBACK QUERIES
 # ============================================================================
 
 
@@ -3313,13 +4286,16 @@ async def handle_callback_query(
     ):
 
         try:
+
             page = int(
                 data.split(
                     ":",
                     1
                 )[1]
             )
+
         except ValueError:
+
             page = 0
 
         text, markup = category_prompt(
@@ -3329,14 +4305,13 @@ async def handle_callback_query(
 
         await query.message.reply_text(
             text,
-            reply_markup=markup,
-            parse_mode=ParseMode.MARKDOWN
+            reply_markup=markup
         )
 
         return
 
     # ------------------------------------------------------------
-    # Admin category selection
+    # Admin category
     # ------------------------------------------------------------
 
     if data.startswith(
@@ -3436,16 +4411,13 @@ async def handle_callback_query(
         ] = False
 
         await query.message.reply_text(
-            "🎉 **SUCCESSFUL! "
-            "কন্টেন্ট সংরক্ষণ হয়েছে।**\n\n"
-            f"🆔 ID: `{new_id}`\n"
-            f"🎬 Title: **{title}**\n"
-            f"📁 Media: `{pending['media_type']}`\n"
-            f"🏷️ Category: "
-            f"**{category['label']}**\n\n"
-            "👤 User এখন এই Category "
-            "সিলেক্ট করলে কন্টেন্টটি পাবে।",
-            parse_mode=ParseMode.MARKDOWN
+            "🎉 SUCCESSFUL! কন্টেন্ট সংরক্ষণ হয়েছে।\n\n"
+            f"🆔 ID: {new_id}\n"
+            f"🎬 Title: {title}\n"
+            f"📁 Media: {pending['media_type']}\n"
+            f"🏷️ Category: {category['label']}\n\n"
+            "👤 User এখন এই Category সিলেক্ট করলে "
+            "কন্টেন্টটি পাবে।"
         )
 
         return
@@ -3459,13 +4431,16 @@ async def handle_callback_query(
     ):
 
         try:
+
             page = int(
                 data.split(
                     ":",
                     1
                 )[1]
             )
+
         except ValueError:
+
             page = 0
 
         text, markup = category_prompt(
@@ -3475,14 +4450,13 @@ async def handle_callback_query(
 
         await query.message.reply_text(
             text,
-            reply_markup=markup,
-            parse_mode=ParseMode.MARKDOWN
+            reply_markup=markup
         )
 
         return
 
     # ------------------------------------------------------------
-    # User category selection
+    # User category
     # ------------------------------------------------------------
 
     if data.startswith(
@@ -3496,7 +4470,8 @@ async def handle_callback_query(
 
         await show_category_content(
             query.message,
-            key
+            key,
+            send_waiting=True
         )
 
         return
@@ -3509,7 +4484,8 @@ async def handle_callback_query(
 
         await show_category_content(
             query.message,
-            "natok"
+            "natok",
+            send_waiting=True
         )
 
         return
@@ -3522,7 +4498,8 @@ async def handle_callback_query(
 
         await show_category_content(
             query.message,
-            "music"
+            "music",
+            send_waiting=True
         )
 
         return
@@ -3563,12 +4540,11 @@ async def handle_callback_query(
             ])
 
         await query.message.reply_text(
-            "🔥 **ট্রেন্ডিং কন্টেন্ট:**\n\n"
+            "🔥 ট্রেন্ডিং কন্টেন্ট:\n\n"
             "যেটি চান সেটি নির্বাচন করুন।",
             reply_markup=InlineKeyboardMarkup(
                 buttons
-            ),
-            parse_mode=ParseMode.MARKDOWN
+            )
         )
 
         return
@@ -3585,6 +4561,22 @@ async def handle_callback_query(
             )
             or
             "❌ আবহাওয়া তথ্য পাওয়া যায়নি।"
+        )
+
+        return
+
+    # ------------------------------------------------------------
+    # Prayer
+    # ------------------------------------------------------------
+
+    if data == "show_prayer":
+
+        await query.message.reply_text(
+            (
+                await get_prayer_times()
+            )
+            or
+            "❌ নামাজের সময় পাওয়া যায়নি।"
         )
 
         return
@@ -3637,7 +4629,7 @@ async def handle_callback_query(
         return
 
 # ============================================================================
-# Group/member update handling
+# GROUP / MEMBER UPDATE
 # ============================================================================
 
 
@@ -3664,221 +4656,7 @@ async def my_chat_member_handler(
     )
 
 # ============================================================================
-# Fast Everyday Replies
-# ============================================================================
-
-
-RAIN_REPLIES = [
-    "আহা, আজ তো বৃষ্টি! 🌧️",
-    "বৃষ্টি নামলেই মনটা অন্যরকম হয়ে যায়। ☔",
-    "আজ আকাশের মুড একদম বৃষ্টিময়। 🌧️",
-    "বৃষ্টি + চা = সুন্দর কম্বিনেশন। ☕🌧️",
-]
-
-
-HEAT_REPLIES = [
-    "গরম বেশি হলে পানি পান করুন এবং রোদ এড়িয়ে চলুন। ☀️💧",
-    "গরমে শরীর ঠান্ডা রাখতে পর্যাপ্ত পানি পান করুন। 💧",
-    "বাইরে গেলে পানি সঙ্গে রাখুন এবং সম্ভব হলে ছায়ায় থাকুন। ☀️",
-]
-
-
-MORNING_REPLIES = [
-    "সুপ্রভাত! 🌅 আজকের দিনটা সুন্দর হোক।",
-    "সুপ্রভাত! ☀️ পানি পান করে দিন শুরু করুন।",
-    "শুভ সকাল! আজকের গুরুত্বপূর্ণ কাজগুলো আগে গুছিয়ে নিন।",
-]
-
-
-WORK_REPLIES = [
-    "কাজটা একবারে এক ধাপ করে করুন। 💼💪",
-    "আজকের জরুরি কাজগুলো আগে শেষ করুন। ✅",
-    "কাজের মাঝে ছোট বিরতি নিতে ভুলবেন না। 🙂",
-]
-
-
-STUDY_REPLIES = [
-    "পড়ার সময় ফোনটা একটু দূরে রাখুন। 📚📵",
-    "অল্প অল্প করে নিয়মিত পড়াই সবচেয়ে কাজে দেয়। 📖",
-    "আজকের জন্য একটি ছোট পড়ার লক্ষ্য ঠিক করুন। 🎯📚",
-]
-
-
-SLEEP_REPLIES = [
-    "ঘুমের সময় হলে ফোনটা পাশে রেখে বিশ্রাম নিন। 😴🌙",
-    "ভালো ঘুম শরীর ও মনের জন্য দরকার। 💤",
-    "রাত বেশি জাগবেন না—আগামীকাল ফ্রেশ থাকুন। 🌙",
-]
-
-
-def smart_everyday_reply(
-    text
-):
-
-    norm = normalize_text(
-        text
-    )
-
-    rain = any(
-        x in norm
-        for x in [
-            "বৃষ্টি",
-            "বৃষ্টির",
-            "বৃষ্টি হচ্ছে",
-            "rain"
-        ]
-    )
-
-    heat = any(
-        x in norm
-        for x in [
-            "গরম",
-            "গরম লাগ",
-            "তাপমাত্রা বেশি",
-            "heat",
-            "hot"
-        ]
-    )
-
-    morning = any(
-        x in norm
-        for x in [
-            "সুপ্রভাত",
-            "শুভ সকাল",
-            "সকাল হয়েছে"
-        ]
-    )
-
-    study = any(
-        x in norm
-        for x in [
-            "পড়তে বস",
-            "পড়াশোনা",
-            "স্টাডি",
-            "study",
-            "পড়ার সময়"
-        ]
-    )
-
-    work = any(
-        x in norm
-        for x in [
-            "কাজ করতে",
-            "কাজের সময়",
-            "অফিস",
-            "কাজে বস",
-            "work"
-        ]
-    )
-
-    sleep = any(
-        x in norm
-        for x in [
-            "ঘুম",
-            "ঘুমাব",
-            "ঘুমাতে",
-            "ঘুমানোর সময়",
-            "sleep"
-        ]
-    )
-
-    if rain:
-        return random.choice(
-            RAIN_REPLIES
-        )
-
-    if heat:
-        return random.choice(
-            HEAT_REPLIES
-        )
-
-    if morning:
-        return random.choice(
-            MORNING_REPLIES
-        )
-
-    if study:
-        return random.choice(
-            STUDY_REPLIES
-        )
-
-    if work:
-        return random.choice(
-            WORK_REPLIES
-        )
-
-    if sleep:
-        return random.choice(
-            SLEEP_REPLIES
-        )
-
-    return None
-
-# ============================================================================
-# Admin Help Intent
-# ============================================================================
-
-
-async def handle_admin_help(
-    message,
-    context,
-    user,
-    text
-):
-
-    norm = normalize_text(
-        text
-    )
-
-    help_words = [
-        "এডমিন চাই",
-        "অ্যাডমিন চাই",
-        "admin help",
-        "এডমিনের সাথে",
-        "সমস্যা হয়েছে",
-        "অভিযোগ",
-        "admin contact",
-        "contact admin"
-    ]
-
-    if any(
-        w in norm
-        for w in help_words
-    ):
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "💬 এডমিন @"
-                    + ADMIN_USERNAME
-                    + "-কে মেসেজ দিন",
-                    url=(
-                        f"https://t.me/"
-                        f"{ADMIN_USERNAME}"
-                    )
-                )
-            ]
-        ])
-
-        await message.reply_text(
-            f"👑 **এডমিনের সাথে যোগাযোগ:** "
-            f"@{ADMIN_USERNAME}",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN
-        )
-
-        await notify_admin_user_help(
-            context.bot,
-            user,
-            text
-        )
-
-        return True
-
-    return False
-
-# ============================================================================
-# Main Message Processor
+# MAIN MESSAGE PROCESSOR
 # ============================================================================
 
 
@@ -3891,7 +4669,11 @@ async def handle_all_messages(
     user = update.effective_user
     chat = update.effective_chat
 
-    if not message or not user or not chat:
+    if (
+        not message
+        or not user
+        or not chat
+    ):
         return
 
     logger.info(
@@ -3954,7 +4736,7 @@ async def handle_all_messages(
     )
 
     # ------------------------------------------------------------
-    # Admin help
+    # ADMIN HELP
     # ------------------------------------------------------------
 
     if await handle_admin_help(
@@ -3966,7 +4748,72 @@ async def handle_all_messages(
         return
 
     # ------------------------------------------------------------
-    # Weather / prayer FIRST
+    # CREATOR / BOSS - VERY FAST
+    # ------------------------------------------------------------
+
+    creator_keywords = [
+        "তোমাকে কে তৈরি",
+        "তোমাকে কে বানাইছে",
+        "তোমাকে কে বানিয়েছে",
+        "কে তোমাকে বানিয়েছে",
+        "তোমার creator কে",
+        "creator কে",
+        "who created you",
+        "who made you",
+        "তোমার boss কে",
+        "তোমার বস কে",
+    ]
+
+    if any(
+        x in norm
+        for x in creator_keywords
+    ):
+
+        await message.reply_text(
+            random.choice([
+                "🤖 আমার Boss, TOMAL CHOWDHURY আমাকে তৈরি করছে। 👑\n"
+                "Boss: @tomalchowdhury2 ❤️",
+
+                "😎 আমাকে তৈরি করছে আমার Boss TOMAL CHOWDHURY। 👑\n"
+                "Username: @tomalchowdhury2",
+
+                "🤖 আমার Boss হলেন TOMAL CHOWDHURY। 👑🔥\n"
+                "আমি Boss-এর কথা শুনি।\n"
+                "@tomalchowdhury2",
+            ])
+        )
+
+        return
+
+    # ------------------------------------------------------------
+    # HOME / LOCATION - VERY FAST
+    # ------------------------------------------------------------
+
+    home_keywords = [
+        "তুমি কোথায় থাকো",
+        "তুমি কই থাকো",
+        "তোমার বাসা কোথায়",
+        "তোমার বাড়ি কোথায়",
+        "where do you live",
+        "where is your home",
+    ]
+
+    if any(
+        x in norm
+        for x in home_keywords
+    ):
+
+        await message.reply_text(
+            "🏠 আমার কোনো বাসা নেই, "
+            "আমি আমার user name, TOMAL CHOWDHURY বসের সাথে "
+            "থাকি এবং বসের কথা শুনি। 😎\n\n"
+            "👑 Boss: @tomalchowdhury2"
+        )
+
+        return
+
+    # ------------------------------------------------------------
+    # WEATHER / PRAYER FIRST
     # ------------------------------------------------------------
 
     if any(
@@ -3974,7 +4821,7 @@ async def handle_all_messages(
         for w in [
             "আবহাওয়া",
             "weather",
-            "তাপমাত্রা"
+            "তাপমাত্রা",
         ]
     ):
 
@@ -3994,7 +4841,7 @@ async def handle_all_messages(
             "নামাজের সময়",
             "নামাজ কখন",
             "আজকের নামাজ",
-            "prayer time"
+            "prayer time",
         ]
     ):
 
@@ -4009,26 +4856,34 @@ async def handle_all_messages(
         return
 
     # ------------------------------------------------------------
-    # CATEGORY SYSTEM
+    # FAST EVERYDAY SMART REPLY
     #
-    # Examples:
-    # নাটক
-    # নাটক আছে
-    # নাটক দেন
-    # নাটক চাই
-    # শীত
-    # শীতের ভিডিও
-    # শীতের কি আছে
-    # শীতের ভিডিও দেখাও
-    # ক্রিকেট আছে?
+    # This happens BEFORE OpenAI.
+    # ------------------------------------------------------------
+
+    smart_reply = smart_everyday_reply(
+        text
+    )
+
+    if smart_reply:
+
+        await message.reply_text(
+            smart_reply
+        )
+
+        return
+
+    # ------------------------------------------------------------
+    # CATEGORY
     # ------------------------------------------------------------
 
     category_key = detect_category_intent(
         text
     )
 
-    if category_key and is_category_request(
-        text
+    if (
+        category_key
+        and is_category_request(text)
     ):
 
         category = get_category(
@@ -4037,15 +4892,21 @@ async def handle_all_messages(
 
         if category:
 
+            # User requested waiting message first.
+            await message.reply_text(
+                "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+            )
+
             await show_category_content(
                 message,
-                category_key
+                category_key,
+                send_waiting=False
             )
 
             return
 
     # ------------------------------------------------------------
-    # Exact content search
+    # CONTENT SEARCH
     # ------------------------------------------------------------
 
     is_drama_query = any(
@@ -4053,7 +4914,7 @@ async def handle_all_messages(
         for k in [
             "নাটক",
             "drama",
-            "natok"
+            "natok",
         ]
     )
 
@@ -4064,7 +4925,7 @@ async def handle_all_messages(
             "song",
             "গজল",
             "audio",
-            "music"
+            "music",
         ]
     )
 
@@ -4074,7 +4935,7 @@ async def handle_all_messages(
             "ভিডিও",
             "video",
             "মুভি",
-            "movie"
+            "movie",
         ]
     )
 
@@ -4091,7 +4952,7 @@ async def handle_all_messages(
                 "পাঠাও",
                 "পাঠান",
                 "লাগবে",
-                "দেও"
+                "দেও",
             ]
         )
     )
@@ -4128,6 +4989,8 @@ async def handle_all_messages(
             "আছে",
             "দেখাও",
             "দেখান",
+            "দিবে",
+            "দিবেন",
         ]
 
         for rm in remove_words:
@@ -4146,6 +5009,10 @@ async def handle_all_messages(
             clean_query
         ).strip()
 
+        # --------------------------------------------------------
+        # Specific content
+        # --------------------------------------------------------
+
         if clean_query:
 
             found = search_content(
@@ -4155,6 +5022,10 @@ async def handle_all_messages(
 
             if found:
 
+                await message.reply_text(
+                    "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+                )
+
                 await deliver_media(
                     update,
                     found
@@ -4162,30 +5033,51 @@ async def handle_all_messages(
 
                 return
 
-        # Category itself
+        # --------------------------------------------------------
+        # Generic নাটক
+        # --------------------------------------------------------
+
         if (
             is_drama_query
             and not clean_query
         ):
 
+            await message.reply_text(
+                "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+            )
+
             await show_category_content(
                 message,
-                "natok"
+                "natok",
+                send_waiting=False
             )
 
             return
+
+        # --------------------------------------------------------
+        # Generic গান
+        # --------------------------------------------------------
 
         if (
             is_song_query
             and not clean_query
         ):
 
+            await message.reply_text(
+                "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+            )
+
             await show_category_content(
                 message,
-                "music"
+                "music",
+                send_waiting=False
             )
 
             return
+
+        # --------------------------------------------------------
+        # Generic video
+        # --------------------------------------------------------
 
         if (
             is_drama_query
@@ -4200,7 +5092,7 @@ async def handle_all_messages(
 
             recs = get_contents_by_category(
                 category_to_show,
-                3
+                5
             )
 
             buttons = []
@@ -4233,57 +5125,48 @@ async def handle_all_messages(
                 )
             ])
 
-            rec_text = ""
+            await message.reply_text(
+                "অবশ্যই একটু অপেক্ষা করুন দিচ্ছি.. ⏳😊"
+            )
 
             if recs:
 
                 rec_text = (
-                    "\n\n💡 জনপ্রিয় কন্টেন্ট:\n"
+                    "💡 জনপ্রিয় কন্টেন্ট:\n\n"
                     + "\n".join(
-                        f"• **{r['title']}**"
+                        f"• {r['title']}"
                         for r in recs
                     )
                 )
 
-            await message.reply_text(
-                "😔 **কাঙ্ক্ষিত কন্টেন্ট "
-                "পাওয়া যায়নি।**"
-                + rec_text
-                + "\n\n"
-                "নামটি ঠিকভাবে লিখে আবার চেষ্টা করুন।",
-                reply_markup=InlineKeyboardMarkup(
-                    buttons
-                ),
-                parse_mode=ParseMode.MARKDOWN
-            )
+                await message.reply_text(
+                    rec_text,
+                    reply_markup=InlineKeyboardMarkup(
+                        buttons
+                    )
+                )
 
-            await notify_admin_missing_content(
-                context.bot,
-                user,
-                category_to_show,
-                text
-            )
+            else:
+
+                await message.reply_text(
+                    "😔 এই Category-তে এখনো কন্টেন্ট নেই।\n\n"
+                    "📩 নতুন কন্টেন্টের জন্য Admin-কে জানানো হয়েছে।",
+                    reply_markup=InlineKeyboardMarkup(
+                        buttons
+                    )
+                )
+
+                await notify_admin_missing_content(
+                    context.bot,
+                    user,
+                    category_to_show,
+                    text
+                )
 
             return
 
     # ------------------------------------------------------------
-    # Fast everyday replies
-    # ------------------------------------------------------------
-
-    smart_reply = smart_everyday_reply(
-        text
-    )
-
-    if smart_reply:
-
-        await message.reply_text(
-            smart_reply
-        )
-
-        return
-
-    # ------------------------------------------------------------
-    # AI
+    # OPENAI FALLBACK
     # ------------------------------------------------------------
 
     save_message(
@@ -4293,9 +5176,14 @@ async def handle_all_messages(
         text
     )
 
-    await message.reply_chat_action(
-        "typing"
-    )
+    try:
+
+        await message.reply_chat_action(
+            "typing"
+        )
+
+    except Exception:
+        pass
 
     ai_reply = await generate_chatgpt_response(
         chat.id,
@@ -4314,7 +5202,40 @@ async def handle_all_messages(
     )
 
 # ============================================================================
-# Global Error
+# RATE LIMIT
+# ============================================================================
+
+
+user_last_action = {}
+
+
+def check_rate_limit(
+    user_id,
+    interval=0.7
+):
+
+    current = time.time()
+
+    last = user_last_action.get(
+        user_id,
+        0
+    )
+
+    if (
+        current - last
+        < interval
+    ):
+
+        return False
+
+    user_last_action[
+        user_id
+    ] = current
+
+    return True
+
+# ============================================================================
+# GLOBAL ERROR
 # ============================================================================
 
 
@@ -4346,7 +5267,10 @@ async def global_error_handler(
 
     user = (
         update.effective_user
-        if isinstance(update, Update)
+        if isinstance(
+            update,
+            Update
+        )
         else None
     )
 
@@ -4366,7 +5290,7 @@ async def global_error_handler(
         pass
 
 # ============================================================================
-# Startup
+# STARTUP
 # ============================================================================
 
 
@@ -4374,7 +5298,7 @@ async def post_init(
     application
 ):
 
-    # Clear old webhook before polling
+    # Remove old webhook
     try:
 
         await application.bot.delete_webhook(
@@ -4396,7 +5320,7 @@ async def post_init(
             e
         )
 
-    # Ads status
+    # AdsGram
     if ADSGRAM_ENABLED:
 
         logger.info(
@@ -4422,7 +5346,7 @@ async def post_init(
         )
 
 # ============================================================================
-# Run Bot
+# RUN BOT
 # ============================================================================
 
 
@@ -4444,7 +5368,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Commands
+    # COMMANDS
     # ------------------------------------------------------------
 
     app.add_handler(
@@ -4567,7 +5491,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Callback
+    # CALLBACK
     # ------------------------------------------------------------
 
     app.add_handler(
@@ -4577,7 +5501,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Group/member updates
+    # GROUP / MEMBER
     # ------------------------------------------------------------
 
     app.add_handler(
@@ -4588,7 +5512,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Media
+    # MEDIA
     # ------------------------------------------------------------
 
     app.add_handler(
@@ -4605,7 +5529,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Text
+    # TEXT
     # ------------------------------------------------------------
 
     app.add_handler(
@@ -4621,7 +5545,7 @@ def run_bot_once():
     )
 
     # ------------------------------------------------------------
-    # Startup information
+    # STARTUP INFORMATION
     # ------------------------------------------------------------
 
     print(
@@ -4638,7 +5562,19 @@ def run_bot_once():
     )
 
     print(
+        f"👑 Boss: {BOSS_NAME}"
+    )
+
+    print(
+        f"📱 Boss Username: {BOSS_USERNAME}"
+    )
+
+    print(
         f"🧠 AI Model: {OPENAI_MODEL}"
+    )
+
+    print(
+        "⚡ Fast Smart Reply Engine: ON"
     )
 
     print(
@@ -4646,7 +5582,8 @@ def run_bot_once():
     )
 
     print(
-        "⚡ Fast Intent Replies: ON"
+        f"📂 Default Categories: "
+        f"{len(DEFAULT_CATEGORIES)}+"
     )
 
     print(
@@ -4695,11 +5632,15 @@ def run_bot_once():
     )
 
     print(
+        "🕌 Prayer notifications: ON"
+    )
+
+    print(
         "=================================================="
     )
 
     # ------------------------------------------------------------
-    # Long polling
+    # LONG POLLING
     # ------------------------------------------------------------
 
     app.run_polling(
@@ -4708,16 +5649,11 @@ def run_bot_once():
     )
 
 # ============================================================================
-# Main
+# MAIN
 # ============================================================================
 
 
 def main():
-
-    """
-    Start bot and automatically recover
-    from temporary network failures.
-    """
 
     init_db()
 
